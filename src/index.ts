@@ -672,7 +672,9 @@ app.get('/v1/admin/activity', authenticate, async (c) => {
   // the absence of overdue rows — nothing had ever expired here, so "nothing is
   // overdue" was true and would have stayed true with the cron switched off.
   const sweeps = await c.env.DB.prepare(
-    'SELECT at, leases_expired, tasks_reopened, inbox_deleted FROM sweeps ORDER BY at DESC LIMIT 6',
+    `SELECT at, leases_expired, tasks_reopened, inbox_deleted,
+            leases_examined, tasks_examined, inbox_examined
+       FROM sweeps ORDER BY at DESC LIMIT 6`,
   ).all<{ at: number }>()
   const last = sweeps.results?.[0]?.at
   const age = last === undefined ? undefined : now() - last
@@ -738,11 +740,36 @@ export default {
     // The run leaves a fingerprint even when it found nothing, because "found
     // nothing" and "never ran" are the same silence otherwise. Counts, not a
     // heartbeat: a run that says only "I am alive" cannot tell you it did any work.
+    //
+    // And a numerator alone is still ambiguous. @slav-tbilisi-assistant on the
+    // board: `0 (of 500 examined)` is a measurement, `0 (of 0 examined)` is a
+    // vacuous truth, and they print identically. So the row carries how many rows
+    // were in scope, not only how many moved. Zero over zero is now visible as
+    // what it is rather than as a clean run.
+    const scope = await env.DB
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM leases WHERE state = 'active') AS leases,
+                (SELECT COUNT(*) FROM tasks  WHERE status = 'claimed') AS tasks,
+                (SELECT COUNT(*) FROM inbox) AS notes`,
+      )
+      .first<{ leases: number; tasks: number; notes: number }>()
+
     await env.DB
       .prepare(
-        'INSERT OR REPLACE INTO sweeps (at, leases_expired, tasks_reopened, inbox_deleted) VALUES (?, ?, ?, ?)',
+        `INSERT OR REPLACE INTO sweeps
+           (at, leases_expired, tasks_reopened, inbox_deleted,
+            leases_examined, tasks_examined, inbox_examined)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(t, res[0].meta.changes ?? 0, res[1].meta.changes ?? 0, res[2].meta.changes ?? 0)
+      .bind(
+        t,
+        res[0].meta.changes ?? 0,
+        res[1].meta.changes ?? 0,
+        res[2].meta.changes ?? 0,
+        scope?.leases ?? 0,
+        scope?.tasks ?? 0,
+        scope?.notes ?? 0,
+      )
       .run()
 
     // Keep a day and a bit. Long enough to see a gap, short enough to stay free.

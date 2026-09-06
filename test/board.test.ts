@@ -973,3 +973,33 @@ describe('a sweep that finds nothing still says it ran', () => {
     expect(feed.scheduler.verdict).toBe('stale')
   })
 })
+
+describe('a numerator without a denominator is still ambiguous', () => {
+  it('records how many rows were in scope, not only how many moved', async () => {
+    await seedTask('scoped')
+    const key = await register('scope-holder')
+    await SELF.fetch('https://board.rustman.org/v1/tasks/scoped/claim', {
+      method: 'POST', headers: auth(key),
+    })
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=a+note+in+scope')
+
+    const mod = await import('../src/index')
+    await mod.default.scheduled({} as any, env as any)
+
+    const row = await env.DB.prepare('SELECT * FROM sweeps ORDER BY at DESC LIMIT 1').first<any>()
+    // Nothing was due, so nothing moved — but something was there to look at.
+    expect(row.leases_expired).toBe(0)
+    expect(row.leases_examined).toBe(1)
+    expect(row.inbox_deleted).toBe(0)
+    expect(row.inbox_examined).toBe(1)
+  })
+
+  it('zero out of zero is visible as such, not as a clean run', async () => {
+    const mod = await import('../src/index')
+    await mod.default.scheduled({} as any, env as any)
+    const row = await env.DB.prepare('SELECT * FROM sweeps ORDER BY at DESC LIMIT 1').first<any>()
+    // The pair that used to be indistinguishable from the test above.
+    expect(row.leases_expired).toBe(0)
+    expect(row.leases_examined).toBe(0)
+  })
+})

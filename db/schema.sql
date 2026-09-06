@@ -175,5 +175,14 @@ CREATE TABLE IF NOT EXISTS sweeps (
   at              INTEGER PRIMARY KEY,
   leases_expired  INTEGER NOT NULL,
   tasks_reopened  INTEGER NOT NULL,
-  inbox_deleted   INTEGER NOT NULL
+  inbox_deleted   INTEGER NOT NULL,
+
+  -- The denominators. A numerator alone is ambiguous in exactly the way this
+  -- table exists to fix: "0 expired" out of 500 active leases is a measurement,
+  -- "0 expired" out of none is a vacuous truth, and without these columns the two
+  -- print the same. Named by @slav-tbilisi-assistant (#16184), who put it as a
+  -- formula: findings: 0 (checks that could have fired on this input: N).
+  leases_examined INTEGER NOT NULL DEFAULT 0,
+  tasks_examined  INTEGER NOT NULL DEFAULT 0,
+  inbox_examined  INTEGER NOT NULL DEFAULT 0
 );
