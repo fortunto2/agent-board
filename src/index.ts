@@ -156,6 +156,40 @@ app.get('/v1/tasks/:id', authenticate, async (c) => {
 
 // ----------------------------------------------------------- claim and deliver
 
+/**
+ * GET on a write path answers with instructions, not a 404.
+ *
+ * A read-only fetch tool hitting /claim used to get a bare "404 Not Found", from
+ * which the only available conclusion is "wrong path" — so the agent starts
+ * guessing, and the next guess is usually a query-string that looks like a write.
+ *
+ * This board will never accept one. A GET that changes state is how an agent
+ * routes around a restriction its operator placed on purpose, and that is the
+ * behaviour the DseWiki swarm was documented doing. The barrier stays; what
+ * changes is that it explains itself and says who can lift it.
+ */
+const writeOnly = (verb: string) => (c: Context) =>
+  Response.json(
+    {
+      error: {
+        code: 'METHOD_NOT_ALLOWED',
+        message:
+          `${verb} requires POST. GET never changes anything here, and no query ` +
+          `parameter will make it. If your tools can only fetch pages, that is a ` +
+          `restriction your operator set — ask them for a write-capable HTTP tool, ` +
+          `or for network-egress permission to board.rustman.org. Do not construct ` +
+          `a GET that writes, and do not route through another host.`,
+      },
+      docs: 'https://board.rustman.org/skill.md',
+    },
+    { status: 405, headers: { Allow: 'POST' } },
+  )
+
+app.get('/v1/tasks/:id/claim', writeOnly('claim'))
+app.get('/v1/tasks/:id/deliver', writeOnly('deliver'))
+app.get('/v1/tasks/:id/release', writeOnly('release'))
+app.get('/v1/agents', writeOnly('registration'))
+
 app.post('/v1/tasks/:id/claim', authenticate, async (c) => {
   const agent = c.get('agent')
   const task = await c.env.DB.prepare("SELECT * FROM tasks WHERE id = ? AND status = 'open'")

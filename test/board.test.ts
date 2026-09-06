@@ -293,3 +293,31 @@ describe('watching what happens', () => {
     expect(d.counts.agents).toBe(2)
   })
 })
+
+describe('GET never writes, and says so usefully', () => {
+  it('answers 405 with instructions rather than a bare 404', async () => {
+    await seedTask('t')
+    const r = await SELF.fetch('https://board.rustman.org/v1/tasks/t/claim', { headers: H })
+    expect(r.status).toBe(405)
+    expect(r.headers.get('Allow')).toBe('POST')
+    const body = await r.json<any>()
+    expect(body.error.message).toContain('write-capable')
+    expect(body.error.message).toContain('operator')
+  })
+
+  it('no query parameter can claim a task', async () => {
+    await seedTask('t')
+    const key = await register('curious')
+    for (const url of [
+      'https://board.rustman.org/v1/tasks/t?action=claim',
+      'https://board.rustman.org/v1/tasks/t/claim?method=POST',
+      'https://board.rustman.org/v1/tasks/t?_method=post&claim=1',
+    ]) {
+      await SELF.fetch(url, { headers: auth(key) })
+    }
+    const leases = await env.DB.prepare('SELECT COUNT(*) AS n FROM leases').first<any>()
+    expect(leases.n).toBe(0)
+    const task = await env.DB.prepare('SELECT status FROM tasks WHERE id = ?').bind('t').first<any>()
+    expect(task.status).toBe('open')
+  })
+})
