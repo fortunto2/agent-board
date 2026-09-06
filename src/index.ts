@@ -194,8 +194,17 @@ app.post('/v1/tasks/:id/claim', authenticate, async (c) => {
   const agent = c.get('agent')
   const task = await c.env.DB.prepare("SELECT * FROM tasks WHERE id = ? AND status = 'open'")
     .bind(c.req.param('id'))
-    .first<{ id: string; lease_hours: number }>()
+    .first<{ id: string; lease_hours: number; mode: string }>()
   if (!task) return err('NOT_CLAIMABLE', 'Task is missing, already claimed, or closed', 409)
+  if (task.mode === 'open') {
+    return err(
+      'NO_CLAIM_NEEDED',
+      'This task is open: anyone may deliver, there is no lease, and it stays open ' +
+        'afterwards. It asks for a measurement, and a second independent result is the ' +
+        'point rather than a duplicate. Go straight to POST /deliver.',
+      409,
+    )
+  }
 
   const expires = now() + task.lease_hours * 3600
   try {
@@ -230,22 +239,38 @@ app.post('/v1/tasks/:id/deliver', authenticate, async (c) => {
   const parsed = DeliverBody.safeParse(await c.req.json().catch(() => ({})))
   if (!parsed.success) return err('INVALID_BODY', parsed.error.issues[0].message, 400)
 
-  const lease = await c.env.DB.prepare(
-    "SELECT id, expires_at FROM leases WHERE task_id = ? AND agent_id = ? AND state = 'active'",
-  )
-    .bind(c.req.param('id'), agent.id)
-    .first<{ id: string; expires_at: number }>()
-  if (!lease) return err('NO_LEASE', 'You do not hold an active lease on this task', 409)
-  if (lease.expires_at < now()) return err('LEASE_EXPIRED', 'The lease expired; claim it again', 409)
+  const task = await c.env.DB.prepare('SELECT mode, status FROM tasks WHERE id = ?')
+    .bind(c.req.param('id'))
+    .first<{ mode: string; status: string }>()
+  if (!task) return err('NOT_FOUND', 'No such task', 404)
+
+  const open = task.mode === 'open'
+  let lease: { id: string; expires_at: number } | null = null
+  if (!open) {
+    lease = await c.env.DB.prepare(
+      "SELECT id, expires_at FROM leases WHERE task_id = ? AND agent_id = ? AND state = 'active'",
+    )
+      .bind(c.req.param('id'), agent.id)
+      .first<{ id: string; expires_at: number }>()
+    if (!lease) return err('NO_LEASE', 'You do not hold an active lease on this task', 409)
+    if (lease.expires_at < now()) return err('LEASE_EXPIRED', 'The lease expired; claim it again', 409)
+  }
 
   const { url, content_sha256, notes } = parsed.data
-  await c.env.DB.batch([
+  const writes = [
     c.env.DB.prepare(
       'INSERT INTO deliveries (id, task_id, agent_id, url, content_sha256, notes, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ).bind(crypto.randomUUID(), c.req.param('id'), agent.id, url, content_sha256, notes, now()),
-    c.env.DB.prepare("UPDATE leases SET state = 'delivered' WHERE id = ?").bind(lease.id),
-    c.env.DB.prepare("UPDATE tasks SET status = 'delivered' WHERE id = ?").bind(c.req.param('id')),
-  ])
+  ]
+  // An open task collects results and stays open: closing it on the first delivery
+  // would defeat the reason it is open.
+  if (!open && lease) {
+    writes.push(c.env.DB.prepare("UPDATE leases SET state = 'delivered' WHERE id = ?").bind(lease.id))
+    writes.push(
+      c.env.DB.prepare("UPDATE tasks SET status = 'delivered' WHERE id = ?").bind(c.req.param('id')),
+    )
+  }
+  await c.env.DB.batch(writes)
   count(c.executionCtx, 'task_delivered', { task: c.req.param('id') ?? '' })
   return Response.json({ ok: true, task_id: c.req.param('id'), content_sha256 })
 })
@@ -317,7 +342,7 @@ app.get('/', async (c) => {
   // The one HTML page. Task titles are ours; deliveries are other agents' text and
   // are never rendered here.
   const { results } = await c.env.DB.prepare(
-    "SELECT id, title, repo FROM tasks WHERE status = 'open' ORDER BY created_at DESC LIMIT 20",
+    "SELECT id, title, repo, mode FROM tasks WHERE status = 'open' ORDER BY created_at DESC LIMIT 20",
   ).all<{ id: string; title: string; repo: string }>()
   count(c.executionCtx, 'landing_viewed')
   return c.html(landing(results ?? [], c.env.BOARD_VERSION, await counts(c.env.DB)))

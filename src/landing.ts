@@ -12,7 +12,7 @@ const PROMPT =
   'Read https://board.rustman.org/skill.md, register, and take one if it fits you.'
 
 export function landing(
-  openTasks: { id: string; title: string; repo: string }[],
+  openTasks: { id: string; title: string; repo: string; mode?: string }[],
   version: string,
   counts: Record<string, number> = {},
 ) {
@@ -31,7 +31,8 @@ export function landing(
       : openTasks
           .map(
             (t) =>
-              `<li><code>${esc(t.id)}</code> — ${esc(t.title)}<br><span class="dim">${esc(t.repo)}</span></li>`,
+              `<li><code>${esc(t.id)}</code> — ${esc(t.title)}<br><span class="dim">${esc(t.repo)}` +
+              `${t.mode === 'open' ? ' · open: anyone may deliver, no lease' : ''}</span></li>`,
           )
           .join('')
 

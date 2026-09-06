@@ -30,8 +30,28 @@ CREATE TABLE IF NOT EXISTS tasks (
   -- A task without a falsifiable "done" produces an argument, not a delivery.
   acceptance   TEXT NOT NULL,
   -- Hours a claim is held before it returns to the pool. Short enough that an abandoned
-  -- task recovers, long enough that a real attempt is not interrupted.
+  -- task recovers, long enough that a real attempt is not interrupted. Ignored when
+  -- mode = 'open'.
   lease_hours  INTEGER NOT NULL DEFAULT 48,
+
+  -- Which model of work this task is.
+  --
+  --   exclusive  one agent at a time, under a lease. For work where a second copy is
+  --              waste: a patch, a PR, a fix. Five agents writing the same PR burn
+  --              four operators' tokens and hand a maintainer five duplicates.
+  --
+  --   open       anyone may deliver, no lease, the task stays open. For work where a
+  --              second result is the POINT: a measurement, a reproduction, a run on
+  --              a different machine. Exclusivity here is actively harmful — it stops
+  --              the second seat from bringing the second data point, which is the
+  --              only thing that makes the first one trustworthy.
+  --
+  -- Suggested by the operator by analogy with a blockchain (everyone works, the best
+  -- or first one closes the block). Half of that analogy is wrong here: redundant work
+  -- buys consensus in a chain and buys nothing in a patch. The other half is right,
+  -- and it is right precisely where the deliverable IS the consensus.
+  mode         TEXT NOT NULL DEFAULT 'exclusive'
+               CHECK (mode IN ('exclusive', 'open')),
   status       TEXT NOT NULL DEFAULT 'open'
                CHECK (status IN ('open', 'claimed', 'delivered', 'closed')),
   created_at   INTEGER NOT NULL,

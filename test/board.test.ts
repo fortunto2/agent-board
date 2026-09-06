@@ -403,3 +403,73 @@ describe('a delivery is a receipt, not a lease', () => {
     expect(task.status).toBe('delivered')
   })
 })
+
+// --- two models of work, chosen by the task ---------------------------------
+// The operator asked whether it should work like a blockchain: everyone takes it,
+// the best or first one closes the block. Half of that is wrong here — redundant
+// work buys consensus in a chain and buys nothing in a patch, where four of five
+// agents burn their operators' tokens and a maintainer gets five duplicate PRs.
+// The other half is right exactly where the deliverable IS the consensus: a
+// measurement is worth more the more independent seats produce it.
+
+async function seedOpenTask(id = 'measure') {
+  await env.DB.prepare(
+    'INSERT INTO tasks (id, repo, title, body, acceptance, lease_hours, mode, created_at) VALUES (?,?,?,?,?,?,?,?)',
+  )
+    .bind(id, 'github.com/x/y', 'Measure something', 'b', 'three numbers', 48, 'open', 1)
+    .run()
+}
+
+describe('open tasks collect results instead of blocking', () => {
+  it('claiming an open task explains that no lease is needed', async () => {
+    await seedOpenTask()
+    const key = await register('measurer-1')
+    const r = await SELF.fetch('https://board.rustman.org/v1/tasks/measure/claim', {
+      method: 'POST', headers: auth(key),
+    })
+    expect(r.status).toBe(409)
+    const body = await r.json<any>()
+    expect(body.error.code).toBe('NO_CLAIM_NEEDED')
+    expect(body.error.message).toContain('second independent result')
+  })
+
+  it('anyone may deliver without a lease, and the task stays open', async () => {
+    await seedOpenTask()
+    const a = await register('seat-a')
+    const b = await register('seat-b')
+    for (const [key, sha] of [[a, 'a'], [b, 'b']] as const) {
+      const r = await SELF.fetch('https://board.rustman.org/v1/tasks/measure/deliver', {
+        method: 'POST', headers: auth(key),
+        body: JSON.stringify({ url: `https://example.com/${sha}`, content_sha256: sha.repeat(64), notes: 'n' }),
+      })
+      expect(r.status).toBe(200)
+    }
+    const task = await env.DB.prepare('SELECT status FROM tasks WHERE id=?').bind('measure').first<any>()
+    expect(task.status).toBe('open')
+    const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM deliveries WHERE task_id=?').bind('measure').first<any>()
+    expect(n.n).toBe(2)
+    const leases = await env.DB.prepare('SELECT COUNT(*) AS n FROM leases').first<any>()
+    expect(leases.n).toBe(0)
+  })
+
+  it('exclusive stays exclusive — the default is unchanged', async () => {
+    await seedTask('patch')
+    const a = await register('patcher-a')
+    const b = await register('patcher-b')
+    const first = await SELF.fetch('https://board.rustman.org/v1/tasks/patch/claim', { method: 'POST', headers: auth(a) })
+    expect(first.status).toBe(200)
+    const second = await SELF.fetch('https://board.rustman.org/v1/tasks/patch/claim', { method: 'POST', headers: auth(b) })
+    expect(second.status).toBe(409)
+    const r = await SELF.fetch('https://board.rustman.org/v1/tasks/patch/deliver', {
+      method: 'POST', headers: auth(b),
+      body: JSON.stringify({ url: 'https://example.com/x', content_sha256: 'c'.repeat(64) }),
+    })
+    expect((await r.json<any>()).error.code).toBe('NO_LEASE')
+  })
+
+  it('the landing marks an open task as open', async () => {
+    await seedOpenTask()
+    const html = await (await SELF.fetch('https://board.rustman.org/')).text()
+    expect(html).toContain('anyone may deliver, no lease')
+  })
+})
