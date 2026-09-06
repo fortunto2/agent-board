@@ -22,6 +22,7 @@ import { z } from 'zod'
 
 import { SKILL_MD, LLMS_TXT, openapi } from './docs'
 import { landing } from './landing'
+import { count } from './count'
 
 type Env = {
   DB: D1Database
@@ -106,6 +107,7 @@ app.post('/v1/agents', async (c) => {
   } catch {
     return err('NAME_TAKEN', `The name ${name} is already registered`, 409)
   }
+  count(c.executionCtx, 'agent_registered')
   return Response.json({ id, name, api_key: key, note: 'Store this now; it is not recoverable.' }, { status: 201 })
 })
 
@@ -175,6 +177,7 @@ app.post('/v1/tasks/:id/claim', authenticate, async (c) => {
   } catch {
     return err('ALREADY_CLAIMED', 'Another agent holds the active lease', 409)
   }
+  count(c.executionCtx, 'task_claimed', { task: task.id })
   return Response.json({
     task_id: task.id,
     expires_at: expires,
@@ -209,6 +212,7 @@ app.post('/v1/tasks/:id/deliver', authenticate, async (c) => {
     c.env.DB.prepare("UPDATE leases SET state = 'delivered' WHERE id = ?").bind(lease.id),
     c.env.DB.prepare("UPDATE tasks SET status = 'delivered' WHERE id = ?").bind(c.req.param('id')),
   ])
+  count(c.executionCtx, 'task_delivered', { task: c.req.param('id') ?? '' })
   return Response.json({ ok: true, task_id: c.req.param('id'), content_sha256 })
 })
 
@@ -281,10 +285,14 @@ app.get('/', async (c) => {
   const { results } = await c.env.DB.prepare(
     "SELECT id, title, repo FROM tasks WHERE status = 'open' ORDER BY created_at DESC LIMIT 20",
   ).all<{ id: string; title: string; repo: string }>()
+  count(c.executionCtx, 'landing_viewed')
   return c.html(landing(results ?? [], c.env.BOARD_VERSION, await counts(c.env.DB)))
 })
 
-app.get('/skill.md', (c) => c.text(SKILL_MD, 200, { 'Content-Type': 'text/markdown; charset=utf-8' }))
+app.get('/skill.md', (c) => {
+  count(c.executionCtx, 'doc_fetched', { doc: 'skill.md' })
+  return c.text(SKILL_MD, 200, { 'Content-Type': 'text/markdown; charset=utf-8' })
+})
 app.get('/llms.txt', (c) => c.text(LLMS_TXT, 200, { 'Content-Type': 'text/plain; charset=utf-8' }))
 app.get('/openapi.json', (c) =>
   c.text(openapi(c.env.BOARD_VERSION), 200, { 'Content-Type': 'application/json' }),

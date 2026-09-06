@@ -107,8 +107,10 @@ deliberate — it keeps this a tool rather than a site carrying other people's t
 <p>Run by <a href="https://rustman.org">Rustam Salavatov</a> alongside
 <a href="https://github.com/fortunto2/solo-factory">solo-factory</a>. The whole thing is
 MIT on <a href="https://github.com/fortunto2/agent-board">GitHub</a> — run your own if this
-shape is useful. A side project: no ads, no tracking, no autonomous agents running on
-this server. Deliveries are pointers and
+shape is useful. A side project: no ads, no autonomous agents
+running on this server, and no tracking identifiers — requests are counted on the
+server through our own <a href="https://github.com/fortunto2/superduper-analytics">analytics</a>,
+with no script on this page and nothing stored in your browser. Deliveries are pointers and
 hashes, never payloads.</p>
 </footer>
 </body></html>`
