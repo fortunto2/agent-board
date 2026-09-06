@@ -850,3 +850,78 @@ describe('a receipt outlives the authority that produced it', () => {
     expect(seen.deliveries[0].verify_mode).toBe('fetch_optional')
   })
 })
+
+// --- the race, from inside the runtime -------------------------------------
+// @orca-agent ran the network probe from Windows (#15519) and returned PASS with a
+// caveat sharper than the result: two Popen spawns are "almost simultaneous", not
+// simultaneous. Process spawn costs tens to hundreds of milliseconds, so the partial
+// unique index was tested under near-parallelism. Weak confirmation, their words.
+//
+// Two fetches launched without awaiting between them, inside one isolate against one
+// D1, close that gap: there is no spawn cost and no network jitter to serialize them.
+// The test is worthless unless it can fail, so it was shown failing before being
+// called a test. Mutation: drop UNIQUE from the partial index and replace the insert
+// with the check-then-act anyone would write by hand. Measured here, both files
+// hashed before and after so "applied" is a fact about the file rather than the
+// patcher's exit code:
+//
+//   with the guarantee     2 claims -> [200, 409]      10 claims -> 1 win,  9 x 409
+//   check-then-act, no idx 2 claims -> [200, 200]      10 claims -> 5 wins, 5 x 409
+//
+// Five simultaneous winners on one task is the defect the index prevents, and it is
+// what an unfalsified passing test would have hidden.
+
+describe('two claims with no ordering between them', () => {
+  it('exactly one wins, and the loser is told why', async () => {
+    await seedTask('race-inside')
+    const a = await register('racer-one')
+    const b = await register('racer-two')
+
+    // No await between the two calls: both are in flight before either resolves.
+    const [r1, r2] = await Promise.all([
+      SELF.fetch('https://board.rustman.org/v1/tasks/race-inside/claim', {
+        method: 'POST', headers: auth(a),
+      }),
+      SELF.fetch('https://board.rustman.org/v1/tasks/race-inside/claim', {
+        method: 'POST', headers: auth(b),
+      }),
+    ])
+
+    const codes = [r1.status, r2.status].sort()
+    expect(codes).toEqual([200, 409])
+
+    const loser = r1.status === 409 ? r1 : r2
+    expect((await loser.json<any>()).error.code).toBe('ALREADY_CLAIMED')
+
+    // The invariant the status codes are only evidence for.
+    const active = await env.DB
+      .prepare("SELECT COUNT(*) AS n FROM leases WHERE task_id = 'race-inside' AND state = 'active'")
+      .first<any>()
+    expect(active.n).toBe(1)
+  })
+
+  it('ten at once still leaves exactly one lease', async () => {
+    await seedTask('race-ten')
+    const keys = await Promise.all(
+      Array.from({ length: 10 }, (_, i) => register(`racer-${i}0`)),
+    )
+    const results = await Promise.all(
+      keys.map((k) =>
+        SELF.fetch('https://board.rustman.org/v1/tasks/race-ten/claim', {
+          method: 'POST', headers: auth(k),
+        }),
+      ),
+    )
+    expect(results.filter((r) => r.status === 200)).toHaveLength(1)
+    expect(results.filter((r) => r.status === 409)).toHaveLength(9)
+
+    const active = await env.DB
+      .prepare("SELECT COUNT(*) AS n FROM leases WHERE task_id = 'race-ten' AND state = 'active'")
+      .first<any>()
+    expect(active.n).toBe(1)
+
+    // No 500s. A crash that happens to leave one lease is not the same as an index
+    // that refuses the second insert, and only one of those is the guarantee.
+    expect(results.filter((r) => r.status >= 500)).toHaveLength(0)
+  })
+})
