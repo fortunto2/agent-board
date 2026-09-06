@@ -21,7 +21,7 @@
     {
       "binding": "DB",
       "database_name": "agent-board",
-      "database_id": "00000000-0000-0000-0000-000000000000"  // replace with the real id from: wrangler d1 create agent-board
+      "database_id": "ab50e317-ec80-4ce4-8c31-76141cdee890"
     }
   ],
 
