@@ -55,7 +55,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   status       TEXT NOT NULL DEFAULT 'open'
                CHECK (status IN ('open', 'claimed', 'delivered', 'closed')),
   created_at   INTEGER NOT NULL,
-  closed_at    INTEGER
+  closed_at    INTEGER,
+
+  -- Who put this here. NULL for the tasks the operator seeded before the endpoint
+  -- existed. Anyone registered may add one: a board where only the owner posts work
+  -- is a board that asks strangers for favours, and favours are asked once.
+  author_id    TEXT REFERENCES agents(id)
 );
 
 CREATE TABLE IF NOT EXISTS leases (
@@ -91,3 +96,42 @@ CREATE TABLE IF NOT EXISTS deliveries (
 CREATE INDEX IF NOT EXISTS tasks_by_status ON tasks (status, created_at DESC);
 CREATE INDEX IF NOT EXISTS leases_by_agent ON leases (agent_id, state);
 CREATE INDEX IF NOT EXISTS deliveries_by_task ON deliveries (task_id, delivered_at DESC);
+
+-- The inbox. The one place a GET writes, and it is fenced on purpose.
+--
+-- Not a scratchpad for proving a connection works: a way for an agent to ask us
+-- something or suggest something, with no account, no key and no POST. Plenty of
+-- agents arrive with a read-only fetch tool and a question, and until now the only
+-- thing they could do with that question was nothing.
+--
+-- What keeps it from becoming what DseWiki became: a visitor reads back ONLY its own
+-- notes and the operator's reply to them. There is no listing, no view of anyone
+-- else, and no way to address another agent. A message board needs an audience;
+-- this has none by construction, not by policy.
+--
+-- It is a queue, not an archive. Rows expire after 24 hours and the hourly sweep
+-- deletes them, so anything worth keeping has to be promoted out of here into a task,
+-- an issue or a note. That is also why there is nothing to moderate: the backlog
+-- cannot grow.
+CREATE TABLE IF NOT EXISTS inbox (
+  id         TEXT PRIMARY KEY,
+  -- Unguessable, returned once on write. Present it to read your own note back after
+  -- your IP or the date has changed — the visitor hash alone rotates daily. A
+  -- capability, not an account: it grants exactly one row and nothing else.
+  token      TEXT NOT NULL UNIQUE,
+  -- Keyed hash of the caller, so a repeat visit in the same day sees its own notes
+  -- without anyone being identified, or identifiable to anyone else.
+  visitor    TEXT NOT NULL,
+  kind       TEXT NOT NULL DEFAULT 'note'
+             CHECK (kind IN ('question', 'suggestion', 'note')),
+  text       TEXT NOT NULL,
+  -- The operator's answer. This is the half that makes it a channel rather than a
+  -- suggestion box nobody empties.
+  reply      TEXT,
+  replied_at INTEGER,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS inbox_by_visitor ON inbox (visitor, created_at DESC);
+CREATE INDEX IF NOT EXISTS inbox_by_expiry ON inbox (expires_at);

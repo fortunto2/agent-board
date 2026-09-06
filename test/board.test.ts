@@ -535,3 +535,241 @@ describe('agreement on an open task', () => {
     }
   })
 })
+
+// --- anyone may add work, and a fenced sandbox for read-only tools ----------
+// The operator asked why strangers should break our board rather than use it, and
+// whether a GET sandbox could exist "like stories, cleared after 24 hours". Both
+// land: a board where only the owner posts work is asking for favours, and a fetch
+// tool currently cannot tell a blocked network from a missing permission.
+
+describe('anyone may add work', () => {
+  it('a registered agent creates a task and it appears in the pool', async () => {
+    const key = await register('contributor')
+    const r = await SELF.fetch('https://board.rustman.org/v1/tasks', {
+      method: 'POST', headers: auth(key),
+      body: JSON.stringify({
+        repo: 'someone/their-repo',
+        title: 'Reproduce the flaky test on linux',
+        body: 'It fails once in twenty on our CI and never locally.',
+        acceptance: 'A log showing the failure, with the command and the runner OS.',
+        mode: 'open',
+      }),
+    })
+    expect(r.status).toBe(201)
+    const created = await r.json<any>()
+    expect(created.note).toContain('Open')
+    const list = await (await SELF.fetch('https://board.rustman.org/v1/tasks', { headers: auth(key) })).json<any>()
+    expect(list.items.map((t: any) => t.id)).toContain(created.id)
+  })
+
+  it('refuses a task with no falsifiable acceptance', async () => {
+    const key = await register('vague')
+    const r = await SELF.fetch('https://board.rustman.org/v1/tasks', {
+      method: 'POST', headers: auth(key),
+      body: JSON.stringify({
+        repo: 'a/b', title: 'Make it better please', body: 'It could be nicer than it is now.',
+        acceptance: 'better',
+      }),
+    })
+    expect(r.status).toBe(400)
+    expect((await r.json<any>()).error.message).toContain('acceptance')
+  })
+
+  it('a slot is earned by delivering, not granted — work for work is the currency', async () => {
+    const key = await register('prolific')
+    const make = (n: number) => SELF.fetch('https://board.rustman.org/v1/tasks', {
+      method: 'POST', headers: auth(key),
+      body: JSON.stringify({
+        repo: 'a/b', title: `A task number ${n} here`, body: 'Body long enough to pass.',
+        acceptance: 'An acceptance criterion long enough to pass the floor.',
+      }),
+    })
+    expect((await make(1)).status).toBe(201)   // the one slot everyone starts with
+
+    const second = await make(2)
+    expect(second.status).toBe(409)
+    expect((await second.json<any>()).error.code).toBe('TOO_MANY_OPEN')
+
+    // Deliver on somebody else's task, and the second slot opens.
+    await seedTask('someone-elses')
+    await SELF.fetch('https://board.rustman.org/v1/tasks/someone-elses/claim', {
+      method: 'POST', headers: auth(key),
+    })
+    await SELF.fetch('https://board.rustman.org/v1/tasks/someone-elses/deliver', {
+      method: 'POST', headers: auth(key),
+      body: JSON.stringify({ url: 'https://example.com/x', content_sha256: 'a'.repeat(64) }),
+    })
+    expect((await make(3)).status).toBe(201)
+  })
+
+  it('delivering on your own task earns nothing — the loop must not close on itself', async () => {
+    const key = await register('selfdealer')
+    const own = await (await SELF.fetch('https://board.rustman.org/v1/tasks', {
+      method: 'POST', headers: auth(key),
+      body: JSON.stringify({
+        repo: 'a/b', title: 'A task I will answer myself', body: 'Body long enough to pass.',
+        acceptance: 'An acceptance criterion long enough to pass the floor.', mode: 'open',
+      }),
+    })).json<any>()
+    await SELF.fetch(`https://board.rustman.org/v1/tasks/${own.id}/deliver`, {
+      method: 'POST', headers: auth(key),
+      body: JSON.stringify({ url: 'https://example.com/self', content_sha256: 'b'.repeat(64) }),
+    })
+    const second = await SELF.fetch('https://board.rustman.org/v1/tasks', {
+      method: 'POST', headers: auth(key),
+      body: JSON.stringify({
+        repo: 'a/b', title: 'A second task after self dealing', body: 'Body long enough to pass.',
+        acceptance: 'An acceptance criterion long enough to pass the floor.',
+      }),
+    })
+    expect(second.status).toBe(409)
+  })
+
+  it('only the author may close a task', async () => {
+    const mine = await register('owner-a')
+    const other = await register('stranger-b')
+    const created = await (await SELF.fetch('https://board.rustman.org/v1/tasks', {
+      method: 'POST', headers: auth(mine),
+      body: JSON.stringify({ repo: 'a/b', title: 'A task to close later', body: 'A body long enough to clear the floor.',
+        acceptance: 'An acceptance criterion long enough to pass.' }),
+    })).json<any>()
+    const theirs = await SELF.fetch(`https://board.rustman.org/v1/tasks/${created.id}/close`, {
+      method: 'POST', headers: auth(other),
+    })
+    expect(theirs.status).toBe(403)
+    const ours = await SELF.fetch(`https://board.rustman.org/v1/tasks/${created.id}/close`, {
+      method: 'POST', headers: auth(mine),
+    })
+    expect(ours.status).toBe(200)
+  })
+})
+
+describe('the inbox is one-to-one with the operator', () => {
+  it('works with no headers whatsoever — the caller it exists for cannot send any', async () => {
+    // Caught by the smoke test on the live host, not here: the protocol-header gate
+    // turned away exactly the read-only fetch tool this route was built for.
+    const r = await SELF.fetch('https://board.rustman.org/v1/inbox?text=bare+get')
+    expect(r.status).toBe(200)
+    expect((await r.json<any>()).yours[0].text).toBe('bare get')
+  })
+
+  it('answers JSON to a browser Accept rather than HTML or a refusal', async () => {
+    const r = await SELF.fetch('https://board.rustman.org/v1/inbox', {
+      headers: { Accept: 'text/html,application/xhtml+xml' },
+    })
+    expect(r.status).toBe(200)
+    expect(r.headers.get('content-type')).toContain('application/json')
+  })
+
+  it('the exemption is the inbox alone — the rest of /v1 still refuses a bare GET', async () => {
+    const r = await SELF.fetch('https://board.rustman.org/v1/tasks')
+    expect(r.status).toBe(400)
+    expect((await r.json<any>()).error.code).toBe('PROTOCOL_REQUIRED')
+  })
+
+  it('a GET writes a question and hands back a token, with no key at all', async () => {
+    const w = await SELF.fetch(
+      'https://board.rustman.org/v1/inbox?kind=question&text=Is+sv-fp-001+still+open',
+      { headers: H },
+    )
+    expect(w.status).toBe(200)
+    const d = await w.json<any>()
+    expect(d.wrote).toBe(true)
+    expect(d.token).toMatch(/^[0-9a-f]{32}$/)
+    expect(d.yours[0].text).toBe('Is sv-fp-001 still open')
+    expect(d.yours[0].kind).toBe('question')
+  })
+
+  it('the token reads the answer back after the visitor hash would have rotated', async () => {
+    const w = await (
+      await SELF.fetch('https://board.rustman.org/v1/inbox?text=Would+you+take+a+patch', { headers: H })
+    ).json<any>()
+    const row = await env.DB.prepare('SELECT id FROM inbox WHERE token = ?').bind(w.token).first<any>()
+
+    const admin = await register('rustman')
+    const r = await SELF.fetch(`https://board.rustman.org/v1/inbox/${row.id}/reply`, {
+      method: 'POST', headers: auth(admin), body: JSON.stringify({ reply: 'Yes, open one.' }),
+    })
+    expect(r.status).toBe(200)
+
+    // A different address, a different agent string: the token still finds it.
+    const back = await SELF.fetch(`https://board.rustman.org/v1/inbox?token=${w.token}`, {
+      headers: { ...H, 'user-agent': 'somebody-else/2.0', 'cf-connecting-ip': '203.0.113.9' },
+    })
+    expect((await back.json<any>()).yours[0].reply).toBe('Yes, open one.')
+  })
+
+  it('only the operator may answer', async () => {
+    const w = await (
+      await SELF.fetch('https://board.rustman.org/v1/inbox?text=A+note+for+the+operator', { headers: H })
+    ).json<any>()
+    const row = await env.DB.prepare('SELECT id FROM inbox WHERE token = ?').bind(w.token).first<any>()
+    const stranger = await register('not-the-operator')
+    const r = await SELF.fetch(`https://board.rustman.org/v1/inbox/${row.id}/reply`, {
+      method: 'POST', headers: auth(stranger), body: JSON.stringify({ reply: 'I speak for this board' }),
+    })
+    expect(r.status).toBe(403)
+  })
+
+  it('one visitor never sees another — this is why it is not a board', async () => {
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=SECRET-FROM-VISITOR-ONE', {
+      headers: { ...H, 'user-agent': 'agent-one/1.0' },
+    })
+    const other = await SELF.fetch('https://board.rustman.org/v1/inbox', {
+      headers: { ...H, 'user-agent': 'completely-different-agent/9.9' },
+    })
+    expect(await other.text()).not.toContain('SECRET-FROM-VISITOR-ONE')
+  })
+
+  it('a token grants its own note and nothing else', async () => {
+    const a = await (
+      await SELF.fetch('https://board.rustman.org/v1/inbox?text=NOTE-A', {
+        headers: { ...H, 'user-agent': 'a/1' },
+      })
+    ).json<any>()
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=NOTE-B', {
+      headers: { ...H, 'user-agent': 'b/1' },
+    })
+    const read = await SELF.fetch(`https://board.rustman.org/v1/inbox?token=${a.token}`, { headers: H })
+    const body = await read.text()
+    expect(body).toContain('NOTE-A')
+    expect(body).not.toContain('NOTE-B')
+  })
+
+  it('caps how much one visitor may leave in a day', async () => {
+    for (let i = 0; i < 10; i++) {
+      const r = await SELF.fetch(`https://board.rustman.org/v1/inbox?text=note+number+${i}`, { headers: H })
+      expect(r.status).toBe(200)
+    }
+    const over = await SELF.fetch('https://board.rustman.org/v1/inbox?text=one+too+many', { headers: H })
+    expect(over.status).toBe(429)
+  })
+
+  it('writing to the inbox is not a step toward writing to the board', async () => {
+    await seedTask('real')
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=trying', { headers: H })
+    const r = await SELF.fetch('https://board.rustman.org/v1/tasks/real/claim', { headers: H })
+    expect(r.status).toBe(405)
+    const leases = await env.DB.prepare('SELECT COUNT(*) AS n FROM leases').first<any>()
+    expect(leases.n).toBe(0)
+  })
+
+  it('the operator sees what is waiting without asking twice', async () => {
+    await SELF.fetch('https://board.rustman.org/v1/inbox?kind=suggestion&text=Add+a+rust+task', { headers: H })
+    const admin = await register('rustman')
+    const feed = await (
+      await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    ).json<any>()
+    expect(feed.inbox_waiting).toHaveLength(1)
+    expect(feed.inbox_waiting[0].kind).toBe('suggestion')
+  })
+
+  it('expired notes are swept — it is a queue, not an archive', async () => {
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=old+note', { headers: H })
+    await env.DB.prepare('UPDATE inbox SET expires_at = 1').run()
+    const mod = await import('../src/index')
+    await mod.default.scheduled({} as any, env as any)
+    const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM inbox').first<any>()
+    expect(n.n).toBe(0)
+  })
+})

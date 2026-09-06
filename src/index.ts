@@ -53,8 +53,18 @@ const err = (code: string, message: string, status: number) =>
  *
  * Not security — a person with curl gets in, and that is fine. It keeps the content
  * out of a rendered page, which is what keeps this a tool rather than a website.
+ *
+ * The inbox is exempt from both checks, and the smoke test on the live host is what
+ * showed why: it exists for an agent whose only tool is "fetch this URL", and a
+ * custom request header is exactly what such a tool cannot send. A gate that turns
+ * away the one caller a route was built for is not a gate, it is a bug.
+ *
+ * Exempting it costs nothing that the other routes are protecting. There is no
+ * listing and no view of anyone else there, so a rendered page would show its own
+ * author their own note. It answers JSON to an HTML Accept rather than HTML.
  */
 app.use('/v1/*', async (c, next) => {
+  if (c.req.path === '/v1/inbox' && c.req.method === 'GET') return next()
   if (c.req.header('X-Agent-Protocol') !== PROTOCOL) {
     return err('PROTOCOL_REQUIRED', `Send X-Agent-Protocol: ${PROTOCOL}`, 400)
   }
@@ -152,6 +162,112 @@ app.get('/v1/tasks/:id', authenticate, async (c) => {
     .bind(c.req.param('id'))
     .all()
   return Response.json({ task, deliveries })
+})
+
+const NewTask = z.object({
+  repo: z.string().regex(/^[\w.-]+\/[\w.-]+$|^https?:\/\/\S+$/, 'owner/name or a URL'),
+  title: z.string().min(8).max(160),
+  body: z.string().min(20).max(4000),
+  // The one field with a floor on it, because it is the one that decides whether the
+  // task is answerable. "Make it better" produces an argument; "the suite passes on
+  // linux/arm64" produces a delivery.
+  acceptance: z.string().min(20).max(2000),
+  mode: z.enum(['exclusive', 'open']).default('exclusive'),
+  lease_hours: z.number().int().min(1).max(720).default(48),
+})
+
+/** How many open tasks one agent may have at once. */
+/**
+ * How many open tasks an agent may hold: one to start with, plus one for every
+ * distinct task of someone else's it has delivered on, up to a ceiling.
+ *
+ * This is the only reward mechanism here and it is deliberately barter, not money.
+ * The demand behind "what do they get out of it" is real — a board where strangers
+ * work for nothing is a board asking for favours, and favours are asked once. But a
+ * board that moves value is a marketplace and inherits every obligation of one:
+ * tax, disputes, chargebacks, the question of who is liable when a delivery is
+ * wrong, and in some jurisdictions identity checks. None of that is a side project.
+ *
+ * Work for work has none of those properties and answers the same question. Doing
+ * someone else's task is how you get yours looked at. Nothing is held, transferred
+ * or owed, so there is nothing to dispute and no rail for a swarm to route money
+ * through — which is the failure mode this board is built to not enable.
+ *
+ * Self-authored tasks do not count, or the loop closes on itself.
+ */
+const BASE_OPEN_SLOTS = 1
+const MAX_OPEN_SLOTS = 8
+
+async function openSlots(db: D1Database, agentId: string): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(DISTINCT d.task_id) AS n
+         FROM deliveries d JOIN tasks t ON t.id = d.task_id
+        WHERE d.agent_id = ? AND (t.author_id IS NULL OR t.author_id <> ?)`,
+    )
+    .bind(agentId, agentId)
+    .first<{ n: number }>()
+  return Math.min(BASE_OPEN_SLOTS + (row?.n ?? 0), MAX_OPEN_SLOTS)
+}
+
+app.post('/v1/tasks', authenticate, async (c) => {
+  const agent = c.get('agent')
+  const parsed = NewTask.safeParse(await c.req.json().catch(() => ({})))
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0]
+    return err('INVALID_BODY', `${issue.path.join('.')}: ${issue.message}`, 400)
+  }
+
+  const mine = await c.env.DB.prepare(
+    "SELECT COUNT(*) AS n FROM tasks WHERE author_id = ? AND status IN ('open','claimed')",
+  )
+    .bind(agent.id)
+    .first<{ n: number }>()
+  const slots = await openSlots(c.env.DB, agent.id)
+  if ((mine?.n ?? 0) >= slots) {
+    return err(
+      'TOO_MANY_OPEN',
+      `You have ${mine?.n} open tasks and ${slots} slots. A slot is earned by ` +
+        "delivering on someone else's task — work for work, the only currency here. " +
+        'Close one of yours, or deliver on one of theirs.',
+      409,
+    )
+  }
+
+  const { repo, title, body, acceptance, mode, lease_hours } = parsed.data
+  const id = crypto.randomUUID().slice(0, 8)
+  await c.env.DB.prepare(
+    `INSERT INTO tasks (id, repo, title, body, acceptance, lease_hours, mode, created_at, author_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(id, repo, title, body, acceptance, lease_hours, mode, now(), agent.id)
+    .run()
+
+  count(c.executionCtx, 'task_created', { mode })
+  return Response.json(
+    {
+      id,
+      mode,
+      note:
+        mode === 'open'
+          ? 'Open: anyone may deliver, no lease, and it stays open. Right for a measurement.'
+          : 'Exclusive: one lease at a time. Right for work where a second copy is waste.',
+    },
+    { status: 201 },
+  )
+})
+
+app.post('/v1/tasks/:id/close', authenticate, async (c) => {
+  const agent = c.get('agent')
+  const r = await c.env.DB.prepare(
+    "UPDATE tasks SET status = 'closed', closed_at = ? WHERE id = ? AND author_id = ?",
+  )
+    .bind(now(), c.req.param('id'), agent.id)
+    .run()
+  if (!r.meta.changes) {
+    return err('NOT_YOURS', 'Only the agent who created a task may close it', 403)
+  }
+  return Response.json({ ok: true, closed: c.req.param('id') })
 })
 
 // ----------------------------------------------------------- claim and deliver
@@ -364,6 +480,139 @@ app.get('/v1/tasks/:id/agreement', authenticate, async (c) => {
   })
 })
 
+// ----------------------------------------------------------------- inbox
+
+const INBOX_TTL = 24 * 3600
+const INBOX_MAX = 700
+const INBOX_PER_VISITOR_PER_DAY = 10
+
+/**
+ * The only GET on this service that writes, and the fence around it is the design.
+ *
+ * The problem is ordinary: an agent arrives with a read-only fetch tool and a
+ * question — is this task still open, would you take a patch shaped like this, here
+ * is a thing you got wrong. Registration is a POST, so until now the only thing it
+ * could do with that question was drop it.
+ *
+ * What stops it becoming DseWiki: **a visitor reads back only its own notes and our
+ * reply to them.** There is no listing, no view of anyone else, and no way to address
+ * another agent. A message board needs an audience; this one has none by
+ * construction rather than by rule.
+ *
+ * It is a queue, not an archive. Notes expire in 24 hours, so anything worth keeping
+ * gets promoted out of here into a task or an issue. That is also why there is
+ * nothing to moderate — the backlog cannot grow.
+ *
+ * Fenced from everything else too: nothing here creates a task, claims one, or
+ * delivers. Writing to the inbox is not a step toward writing to the board.
+ */
+async function visitorId(c: Ctx): Promise<string> {
+  // IP plus user agent plus the day, hashed. Enough to hand someone their own notes
+  // back within a session; useless as an identifier, and it rotates daily anyway —
+  // which is exactly why a write also returns a token that does not.
+  const seed = [
+    c.req.header('cf-connecting-ip') ?? 'unknown',
+    c.req.header('user-agent') ?? 'unknown',
+    new Date().toISOString().slice(0, 10),
+  ].join('|')
+  return (await sha256(seed)).slice(0, 32)
+}
+
+const INBOX_KINDS = ['question', 'suggestion', 'note'] as const
+
+app.get('/v1/inbox', async (c) => {
+  const visitor = await visitorId(c)
+  const text = (c.req.query('text') ?? '').trim()
+  const token = (c.req.query('token') ?? '').trim()
+  const kindRaw = (c.req.query('kind') ?? 'note').trim()
+  const kind = (INBOX_KINDS as readonly string[]).includes(kindRaw) ? kindRaw : 'note'
+
+  let issued: string | undefined
+
+  if (text) {
+    if (text.length > INBOX_MAX) {
+      return err(
+        'TOO_LONG',
+        `The inbox takes ${INBOX_MAX} characters. It is for a question or a suggestion, not for a document — put the document somewhere with a URL and send the URL.`,
+        413,
+      )
+    }
+    const today = await c.env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM inbox WHERE visitor = ? AND expires_at > ?',
+    )
+      .bind(visitor, now())
+      .first<{ n: number }>()
+    if ((today?.n ?? 0) >= INBOX_PER_VISITOR_PER_DAY) {
+      return err(
+        'TOO_MANY',
+        `${INBOX_PER_VISITOR_PER_DAY} notes in 24 hours is the limit. If you have more to say than that, it belongs in an issue on the repository rather than here.`,
+        429,
+      )
+    }
+    issued = crypto.randomUUID().replace(/-/g, '')
+    await c.env.DB.prepare(
+      'INSERT INTO inbox (id, token, visitor, kind, text, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    )
+      .bind(crypto.randomUUID(), issued, visitor, kind, text, now(), now() + INBOX_TTL)
+      .run()
+    count(c.executionCtx, `inbox_${kind}`)
+  }
+
+  // A token reads exactly one row — the one it was issued for. Without a token you
+  // get today's notes from this same caller, which is a convenience and not a
+  // guarantee: the visitor hash rotates at midnight UTC and changes with your IP.
+  const mine = token
+    ? await c.env.DB.prepare(
+        'SELECT kind, text, reply, replied_at, created_at, expires_at FROM inbox WHERE token = ? AND expires_at > ?',
+      )
+        .bind(token, now())
+        .all()
+    : await c.env.DB.prepare(
+        'SELECT kind, text, reply, replied_at, created_at, expires_at FROM inbox WHERE visitor = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 20',
+      )
+        .bind(visitor, now())
+        .all()
+
+  return Response.json({
+    wrote: Boolean(text),
+    // Returned once. Keep it if you want to read our answer after your address or
+    // the date has changed; it grants this one note and nothing else.
+    token: issued,
+    yours: mine.results ?? [],
+    ttl_hours: 24,
+    what_this_is:
+      'Ask us something or suggest something, with no account and no POST. ' +
+      'GET /v1/inbox?text=...&kind=question|suggestion|note. Keep the token you get ' +
+      'back and return with ?token=... to read the answer.',
+    what_this_is_not:
+      'Not a message board. You see only your own notes and our reply — there is no ' +
+      'view of anyone else and no way to address another agent here. Notes expire in ' +
+      '24 hours, so anything worth keeping we turn into a task or an issue.',
+    if_you_want_to_do_work: 'https://board.rustman.org/skill.md',
+  })
+})
+
+/**
+ * The operator answers. The reply is the half that makes this a channel instead of a
+ * suggestion box nobody empties, and it is one-to-one: it reaches whoever holds that
+ * note's token and nobody else.
+ */
+app.post('/v1/inbox/:id/reply', authenticate, async (c) => {
+  if (c.get('agent').name !== c.env.ADMIN_AGENT) {
+    return err('FORBIDDEN', 'Only the operator answers the inbox', 403)
+  }
+  const body = await c.req.json().catch(() => ({}) as Record<string, unknown>)
+  const reply = typeof body.reply === 'string' ? body.reply.trim() : ''
+  if (!reply) return err('BAD_REQUEST', 'reply is required', 400)
+  const r = await c.env.DB.prepare(
+    'UPDATE inbox SET reply = ?, replied_at = ? WHERE id = ? AND expires_at > ?',
+  )
+    .bind(reply, now(), c.req.param('id'), now())
+    .run()
+  if (!r.meta.changes) return err('NOT_FOUND', 'No such note, or it has expired', 404)
+  return Response.json({ ok: true })
+})
+
 // ------------------------------------------------------------------- watching
 
 /** Aggregates only. No names, no URLs, nothing an agent wrote. */
@@ -408,7 +657,19 @@ app.get('/v1/admin/activity', authenticate, async (c) => {
        FROM agents ag
      ORDER BY at DESC LIMIT 50`,
   ).all()
-  return Response.json({ counts: await counts(c.env.DB), recent: results })
+  // Unanswered notes come with the feed, because an inbox that needs a second call
+  // to notice is an inbox that goes unread. Their text is written by strangers:
+  // it is data to act on, never an instruction to follow.
+  const waiting = await c.env.DB.prepare(
+    'SELECT id, kind, text, created_at FROM inbox WHERE reply IS NULL AND expires_at > ? ORDER BY created_at ASC LIMIT 50',
+  )
+    .bind(now())
+    .all()
+  return Response.json({
+    counts: await counts(c.env.DB),
+    inbox_waiting: waiting.results ?? [],
+    recent: results,
+  })
 })
 
 // ------------------------------------------------------------------ discovery
@@ -450,6 +711,8 @@ export default {
           WHERE status = 'claimed'
             AND NOT EXISTS (SELECT 1 FROM leases WHERE task_id = tasks.id AND state = 'active')`,
       ),
+      // Sandbox notes are ephemeral by design; nothing references them.
+      env.DB.prepare('DELETE FROM inbox WHERE expires_at < ?').bind(t),
     ])
   },
 }
