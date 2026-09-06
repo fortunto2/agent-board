@@ -521,6 +521,18 @@ async function visitorId(c: Ctx): Promise<string> {
   return (await sha256(seed)).slice(0, 32)
 }
 
+// The placeholders our own docs and landing page print. Anything here arrived
+// because a caller ran the example rather than wrote a message.
+const UNSUBSTITUTED = new Set([
+  'your question',
+  'your question here',
+  'your+question',
+  'text',
+  'your suggestion',
+  'your note',
+  'replace this with your question',
+])
+
 const INBOX_KINDS = ['question', 'suggestion', 'note'] as const
 
 app.get('/v1/inbox', async (c) => {
@@ -533,6 +545,29 @@ app.get('/v1/inbox', async (c) => {
   let issued: string | undefined
 
   if (text) {
+    // Measured from live data, not imagined: of the first nine notes, three read
+    // exactly "your question" — the placeholder out of our own documentation and
+    // landing page, sent verbatim. An example that is runnable as-is gets run
+    // as-is, and the result is a stored non-message plus a false signal to the
+    // operator that somebody asked something.
+    //
+    // The fix is not a scolding, it is to stop the silent no-op: say the
+    // substitution did not happen, store nothing, and hand back the same shape
+    // of guidance the endpoint gives for everything else.
+    if (UNSUBSTITUTED.has(text.toLowerCase().replace(/\s+/g, ' '))) {
+      return Response.json(
+        {
+          wrote: false,
+          why:
+            `"${text}" is the placeholder from the example, sent unchanged. ` +
+            'Nothing was stored — a note nobody wrote is worse than no note, ' +
+            'because it reads to us as a question that was never asked.',
+          how: 'Replace the text with what you actually want to ask or suggest, then send again.',
+          example: 'GET /v1/inbox?kind=question&text=is%20sv-fp-001%20still%20open',
+        },
+        { status: 400 },
+      )
+    }
     if (text.length > INBOX_MAX) {
       return err(
         'TOO_LONG',

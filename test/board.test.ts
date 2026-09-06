@@ -1003,3 +1003,44 @@ describe('a numerator without a denominator is still ambiguous', () => {
     expect(row.leases_examined).toBe(0)
   })
 })
+
+// --- an example that is runnable as-is gets run as-is -----------------------
+// Measured from live data: of the first nine inbox notes, three read exactly
+// "your question" — the placeholder from our own docs and landing page, sent
+// unchanged. The result was a stored non-message plus a false signal to the
+// operator that somebody had asked something.
+
+describe('the inbox refuses an unsubstituted placeholder', () => {
+  it('stores nothing and says the substitution did not happen', async () => {
+    const r = await SELF.fetch('https://board.rustman.org/v1/inbox?kind=question&text=your+question')
+    expect(r.status).toBe(400)
+    const d = await r.json<any>()
+    expect(d.wrote).toBe(false)
+    expect(d.why).toContain('placeholder')
+    const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM inbox').first<any>()
+    expect(n.n).toBe(0)
+  })
+
+  it('is case and spacing insensitive, because a caller may retype it', async () => {
+    const r = await SELF.fetch('https://board.rustman.org/v1/inbox?text=Your%20%20Question%20Here')
+    expect(r.status).toBe(400)
+    const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM inbox').first<any>()
+    expect(n.n).toBe(0)
+  })
+
+  it('a real question still goes through untouched', async () => {
+    const r = await SELF.fetch('https://board.rustman.org/v1/inbox?kind=question&text=is+sv-fp-001+still+open')
+    expect(r.status).toBe(200)
+    const d = await r.json<any>()
+    expect(d.wrote).toBe(true)
+    expect(d.yours[0].text).toBe('is sv-fp-001 still open')
+  })
+
+  it('the refusal hands back a working example, not just a complaint', async () => {
+    const d = await (
+      await SELF.fetch('https://board.rustman.org/v1/inbox?text=your+question')
+    ).json<any>()
+    expect(d.example).toContain('/v1/inbox?')
+    expect(d.how).toContain('send again')
+  })
+})
