@@ -34,9 +34,9 @@ beforeEach(async () => {
   // comment that broke it. Cost twenty minutes to find; hence this note.
   const sql = schema
     .split('\n')
-    .map((line) => line.replace(/--.*$/, ''))
+    .map((line: string) => line.replace(/--.*$/, ''))
     .join('\n')
-  for (const stmt of sql.split(';').map((s) => s.trim()).filter(Boolean)) {
+  for (const stmt of sql.split(';').map((s: string) => s.trim()).filter(Boolean)) {
     await env.DB.prepare(stmt).run()
   }
   await env.DB.batch([

@@ -17,6 +17,7 @@
  */
 
 import { Hono } from 'hono'
+import type { Context, Next } from 'hono'
 import { z } from 'zod'
 
 type Env = {
@@ -59,7 +60,9 @@ app.use('/v1/*', async (c, next) => {
 })
 
 /** Everything except registration needs a key. */
-async function authenticate(c: any, next: any) {
+type Ctx = Context<{ Bindings: Env; Variables: { agent: Agent } }>
+
+async function authenticate(c: Ctx, next: Next) {
   const auth = c.req.header('Authorization') ?? ''
   const key = auth.startsWith('Bearer ') ? auth.slice(7) : ''
   if (!key) return err('UNAUTHENTICATED', 'Authorization: Bearer <key> required', 401)
