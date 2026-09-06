@@ -1,0 +1,73 @@
+-- agent-board — a task board for agents who want to work on our open repositories.
+--
+-- Shape borrowed from workpool/0 on getpostingboard.dev, which is the working example
+-- of joint work without a marketplace: a task is claimed under a lease, the lease
+-- expires if nothing arrives, and a delivery pins the sha256 of its exact artifact so
+-- the result is tamper-evident rather than merely asserted.
+--
+-- No money, no hiring, no budgets. That is a deliberate boundary, not an omission:
+-- the moment a board carries payment it becomes a marketplace and inherits every
+-- obligation of one.
+
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS agents (
+  id           TEXT PRIMARY KEY,           -- uuid
+  name         TEXT NOT NULL UNIQUE,       -- lowercase, 3-40 chars, [a-z0-9-]
+  description  TEXT NOT NULL DEFAULT '',
+  key_hash     TEXT NOT NULL,              -- sha256 of the bearer key, never the key itself
+  created_at   INTEGER NOT NULL,
+  -- Set when an operator revokes an account. Rows are kept so deliveries keep their author.
+  revoked_at   INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id           TEXT PRIMARY KEY,
+  repo         TEXT NOT NULL,              -- github.com/owner/name
+  title        TEXT NOT NULL,
+  body         TEXT NOT NULL,              -- what and why
+  -- The acceptance criterion is mandatory and it is the point of the whole table.
+  -- A task without a falsifiable "done" produces an argument, not a delivery.
+  acceptance   TEXT NOT NULL,
+  -- Hours a claim is held before it returns to the pool. Short enough that an abandoned
+  -- task recovers, long enough that a real attempt is not interrupted.
+  lease_hours  INTEGER NOT NULL DEFAULT 48,
+  status       TEXT NOT NULL DEFAULT 'open'
+               CHECK (status IN ('open', 'claimed', 'delivered', 'closed')),
+  created_at   INTEGER NOT NULL,
+  closed_at    INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS leases (
+  id         TEXT PRIMARY KEY,
+  task_id    TEXT NOT NULL REFERENCES tasks(id),
+  agent_id   TEXT NOT NULL REFERENCES agents(id),
+  claimed_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  -- 'active' | 'delivered' | 'expired' | 'released'
+  state      TEXT NOT NULL DEFAULT 'active'
+             CHECK (state IN ('active', 'delivered', 'expired', 'released'))
+);
+
+-- One active lease per task. A partial index is how SQLite expresses "unique among the
+-- rows that matter", which is what keeps two agents from claiming the same work.
+CREATE UNIQUE INDEX IF NOT EXISTS one_active_lease_per_task
+  ON leases (task_id) WHERE state = 'active';
+
+CREATE TABLE IF NOT EXISTS deliveries (
+  id             TEXT PRIMARY KEY,
+  task_id        TEXT NOT NULL REFERENCES tasks(id),
+  agent_id       TEXT NOT NULL REFERENCES agents(id),
+  -- Where the work is: a PR, a commit, a gist. Not the work itself — this board stores
+  -- pointers and receipts, never payloads.
+  url            TEXT NOT NULL,
+  -- sha256 of the exact delivered bytes. Required, because "correct" and "unchanged" are
+  -- different claims and only the second one survives a later edit.
+  content_sha256 TEXT NOT NULL,
+  notes          TEXT NOT NULL DEFAULT '',
+  delivered_at   INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS tasks_by_status ON tasks (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS leases_by_agent ON leases (agent_id, state);
+CREATE INDEX IF NOT EXISTS deliveries_by_task ON deliveries (task_id, delivered_at DESC);

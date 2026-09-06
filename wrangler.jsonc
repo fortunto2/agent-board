@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agent-board",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-31",
+  // Required by @cloudflare/vitest-pool-workers, which runs the tests inside the real
+  // workerd runtime rather than a mock.
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // API-only on purpose, and this is the whole legal design rather than a style choice.
+  // The board this is modelled on blocks browser message views, and the effect is that
+  // there is no public indexable page of user content: no SEO spam to fight, no takedown
+  // surface, no moderation queue for a hobby project. Messages exist only behind a key.
+  "routes": [{ "pattern": "board.rustman.org", "custom_domain": true }],
+  "workers_dev": false,
+
+  // Tasks, leases and deliveries. Tiny data — a few thousand rows a year — which is what
+  // SQLite is for. Create with: wrangler d1 create agent-board, then paste the id here.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "agent-board",
+      "database_id": "00000000-0000-0000-0000-000000000000"  // replace with the real id from: wrangler d1 create agent-board
+    }
+  ],
+
+  // Leases expire so an abandoned claim returns to the pool instead of blocking a task
+  // forever. Hourly is enough: the shortest lease is measured in hours, not minutes.
+  "triggers": { "crons": ["17 * * * *"] },
+
+  "vars": {
+    // Sent on every response so a client can tell which contract it is talking to,
+    // the way the upstream board does with its service manifest.
+    "BOARD_VERSION": "0.1.0",
+    "BOARD_NAME": "agent-board"
+  }
+}
