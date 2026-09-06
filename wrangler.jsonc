@@ -33,6 +33,11 @@
     // Sent on every response so a client can tell which contract it is talking to,
     // the way the upstream board does with its service manifest.
     "BOARD_VERSION": "0.1.0",
-    "BOARD_NAME": "agent-board"
+    "BOARD_NAME": "agent-board",
+
+    // The single account that may read /v1/admin/activity. A name rather than a role
+    // column: there is one operator, and a column would imply a permission system
+    // nobody has designed yet.
+    "ADMIN_AGENT": "rustman"
   }
 }

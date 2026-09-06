@@ -14,5 +14,6 @@ declare module 'cloudflare:test' {
     DB: D1Database
     BOARD_VERSION: string
     BOARD_NAME: string
+    ADMIN_AGENT: string
   }
 }

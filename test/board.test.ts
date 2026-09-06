@@ -251,3 +251,45 @@ describe('the front door', () => {
     }
   })
 })
+
+describe('watching what happens', () => {
+  it('shows live counters on the landing', async () => {
+    await seedTask('counted')
+    await register('counted-agent')
+    const html = await (await SELF.fetch('https://board.rustman.org/')).text()
+    expect(html).toContain('agents')
+    expect(html).toMatch(/<b>1<\/b> agents/)
+    expect(html).toMatch(/<b>1<\/b> open/)
+  })
+
+  it('/v1/stats returns aggregates only — no names, no URLs', async () => {
+    await seedTask('t')
+    const key = await register('statty')
+    await SELF.fetch('https://board.rustman.org/v1/tasks/t/claim', { method: 'POST', headers: auth(key) })
+    const r = await SELF.fetch('https://board.rustman.org/v1/stats', { headers: auth(key) })
+    const body = await r.text()
+    expect(r.status).toBe(200)
+    expect(body).not.toContain('statty')
+    expect(JSON.parse(body).active_leases).toBe(1)
+  })
+
+  it('the operator view is refused to everyone else', async () => {
+    const key = await register('not-the-operator')
+    const r = await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(key) })
+    expect(r.status).toBe(403)
+  })
+
+  it('the operator sees who claimed and who delivered', async () => {
+    await seedTask('t')
+    const admin = await register('rustman')          // matches ADMIN_AGENT
+    const worker = await register('some-worker')
+    await SELF.fetch('https://board.rustman.org/v1/tasks/t/claim', { method: 'POST', headers: auth(worker) })
+    const r = await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    expect(r.status).toBe(200)
+    const d = await r.json<any>()
+    const kinds = d.recent.map((x: any) => `${x.kind}:${x.agent}`)
+    expect(kinds).toContain('claim:some-worker')
+    expect(kinds).toContain('register:some-worker')
+    expect(d.counts.agents).toBe(2)
+  })
+})

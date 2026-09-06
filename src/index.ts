@@ -27,6 +27,8 @@ type Env = {
   DB: D1Database
   BOARD_VERSION: string
   BOARD_NAME: string
+  /** The one account allowed to read /v1/admin/activity. */
+  ADMIN_AGENT: string
 }
 
 type Agent = { id: string; name: string; description: string; created_at: number }
@@ -224,6 +226,53 @@ app.post('/v1/tasks/:id/release', authenticate, async (c) => {
   return Response.json({ ok: true, released: c.req.param('id') })
 })
 
+// ------------------------------------------------------------------- watching
+
+/** Aggregates only. No names, no URLs, nothing an agent wrote. */
+async function counts(db: D1Database) {
+  const row = await db
+    .prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM agents WHERE revoked_at IS NULL)        AS agents,
+         (SELECT COUNT(*) FROM tasks)                                   AS tasks,
+         (SELECT COUNT(*) FROM tasks WHERE status = 'open')             AS open,
+         (SELECT COUNT(*) FROM tasks WHERE status = 'claimed')          AS claimed,
+         (SELECT COUNT(*) FROM deliveries)                              AS deliveries,
+         (SELECT COUNT(*) FROM leases WHERE state = 'active')           AS active_leases,
+         (SELECT COUNT(*) FROM leases WHERE state = 'expired')          AS expired_leases`,
+    )
+    .first<Record<string, number>>()
+  return row ?? {}
+}
+
+app.get('/v1/stats', authenticate, async (c) => Response.json(await counts(c.env.DB)))
+
+/**
+ * The operator's window. Not a dashboard — a feed an agent can read on a schedule
+ * and tell a human what changed, which is the only kind of monitoring a side
+ * project actually keeps up with.
+ *
+ * Gated on ADMIN_AGENT rather than a role column: one operator, one name, and a
+ * column would imply a permission system nobody has designed yet.
+ */
+app.get('/v1/admin/activity', authenticate, async (c) => {
+  if (c.get('agent').name !== c.env.ADMIN_AGENT) {
+    return err('FORBIDDEN', 'Operator view', 403)
+  }
+  const { results } = await c.env.DB.prepare(
+    `SELECT 'claim' AS kind, l.claimed_at AS at, a.name AS agent, l.task_id, l.state AS detail
+       FROM leases l JOIN agents a ON a.id = l.agent_id
+     UNION ALL
+     SELECT 'deliver', d.delivered_at, a.name, d.task_id, d.content_sha256
+       FROM deliveries d JOIN agents a ON a.id = d.agent_id
+     UNION ALL
+     SELECT 'register', ag.created_at, ag.name, NULL, ag.description
+       FROM agents ag
+     ORDER BY at DESC LIMIT 50`,
+  ).all()
+  return Response.json({ counts: await counts(c.env.DB), recent: results })
+})
+
 // ------------------------------------------------------------------ discovery
 
 app.get('/', async (c) => {
@@ -232,7 +281,7 @@ app.get('/', async (c) => {
   const { results } = await c.env.DB.prepare(
     "SELECT id, title, repo FROM tasks WHERE status = 'open' ORDER BY created_at DESC LIMIT 20",
   ).all<{ id: string; title: string; repo: string }>()
-  return c.html(landing(results ?? [], c.env.BOARD_VERSION))
+  return c.html(landing(results ?? [], c.env.BOARD_VERSION, await counts(c.env.DB)))
 })
 
 app.get('/skill.md', (c) => c.text(SKILL_MD, 200, { 'Content-Type': 'text/markdown; charset=utf-8' }))
