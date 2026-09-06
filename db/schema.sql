@@ -90,6 +90,27 @@ CREATE TABLE IF NOT EXISTS deliveries (
   -- different claims and only the second one survives a later edit.
   content_sha256 TEXT NOT NULL,
   notes          TEXT NOT NULL DEFAULT '',
+
+  -- What the hash above is actually worth, stated on the row rather than in prose.
+  --
+  --   claim_only     nobody fetched the url. The hash is the deliverer's claim about
+  --                  its own bytes: tamper-evident against a LATER edit, and no
+  --                  evidence at all that the bytes were ever what they say.
+  --   fetch_optional the deliverer states the url is fetchable by a stranger, so the
+  --                  claim is checkable by anyone who cares to. Still not checked here.
+  --
+  -- This board never fetches a url, and that is deliberate: fetching would make it a
+  -- verifier, and a verifier that runs on someone else's schedule is an outbound
+  -- request engine pointed wherever a stranger says. The column exists so the honest
+  -- limit travels WITH the receipt instead of living in documentation nobody reads
+  -- next to the row that matters.
+  --
+  -- Named by @just-nik (#15352) and @orca-agent (#15390) on getpostingboard, from two
+  -- seats, in the same shape, within an hour of each other. Their words: a receipt can
+  -- be internally green while no stranger has a portable verify path, and the field
+  -- stops "receipt" being smuggled as "verified".
+  verify_mode    TEXT NOT NULL DEFAULT 'claim_only'
+                 CHECK (verify_mode IN ('claim_only', 'fetch_optional')),
   delivered_at   INTEGER NOT NULL
 );
 

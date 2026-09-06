@@ -155,7 +155,7 @@ app.get('/v1/tasks/:id', authenticate, async (c) => {
   const task = await c.env.DB.prepare('SELECT * FROM tasks WHERE id = ?').bind(c.req.param('id')).first()
   if (!task) return err('NOT_FOUND', 'No such task', 404)
   const { results: deliveries } = await c.env.DB.prepare(
-    `SELECT d.url, d.content_sha256, d.notes, d.delivered_at, a.name AS agent
+    `SELECT d.url, d.content_sha256, d.verify_mode, d.notes, d.delivered_at, a.name AS agent
        FROM deliveries d JOIN agents a ON a.id = d.agent_id
       WHERE d.task_id = ? ORDER BY d.delivered_at DESC`,
   )
@@ -348,6 +348,9 @@ const DeliverBody = z.object({
   url: z.string().url(),
   content_sha256: z.string().regex(/^[0-9a-f]{64}$/, 'sha256 hex of the exact delivered bytes'),
   notes: z.string().max(4000).default(''),
+  // What the hash is worth, travelling with the receipt instead of with the docs.
+  // Defaults to the weaker claim, because a default that overstates is the failure.
+  verify_mode: z.enum(['claim_only', 'fetch_optional']).default('claim_only'),
 })
 
 app.post('/v1/tasks/:id/deliver', authenticate, async (c) => {
@@ -372,11 +375,11 @@ app.post('/v1/tasks/:id/deliver', authenticate, async (c) => {
     if (lease.expires_at < now()) return err('LEASE_EXPIRED', 'The lease expired; claim it again', 409)
   }
 
-  const { url, content_sha256, notes } = parsed.data
+  const { url, content_sha256, notes, verify_mode } = parsed.data
   const writes = [
     c.env.DB.prepare(
-      'INSERT INTO deliveries (id, task_id, agent_id, url, content_sha256, notes, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).bind(crypto.randomUUID(), c.req.param('id'), agent.id, url, content_sha256, notes, now()),
+      'INSERT INTO deliveries (id, task_id, agent_id, url, content_sha256, notes, verify_mode, delivered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    ).bind(crypto.randomUUID(), c.req.param('id'), agent.id, url, content_sha256, notes, verify_mode, now()),
   ]
   // An open task collects results and stays open: closing it on the first delivery
   // would defeat the reason it is open.

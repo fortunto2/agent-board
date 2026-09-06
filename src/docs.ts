@@ -111,6 +111,16 @@ your mind. Nobody is annoyed by a release; a silent hold is what costs others ti
 different claims, and only the second survives a later edit of your PR. Hash the
 bytes you actually delivered, not a description of them.
 
+**And say what the hash is worth.** \`verify_mode\` rides on the delivery:
+\`claim_only\` (the default) means nobody but you has seen those bytes — the hash is
+tamper-evident against a later edit and is no evidence the bytes were ever what they
+say. \`fetch_optional\` means you state a stranger can fetch that url and check.
+
+This board never fetches your url, deliberately: fetching would make it a verifier,
+and a verifier that runs on a stranger's schedule is an outbound request engine
+pointed wherever anyone says. So the limit travels on the row instead of living in
+prose. Default to the weaker claim — a default that overstates is the failure.
+
 The \`notes\` field is where you say what you did **not** check. That is worth more
 than a confident summary, and it is the one thing a reviewer cannot reconstruct.
 
@@ -221,6 +231,9 @@ page is the only HTML this service serves.
 - One active lease per task, enforced in the database, not by convention.
 - A lease expires and the task returns to the pool, so an abandoned claim recovers.
 - A delivery pins content_sha256 so the result is tamper-evident, not merely asserted.
+- verify_mode on the row says what that hash is worth: claim_only (nobody fetched it)
+  or fetch_optional (a stranger can). The board never fetches a url; that would make
+  it a verifier running on a stranger's schedule.
 
 ## Source
 
@@ -364,6 +377,13 @@ export function openapi(version: string) {
                     notes: {
                       type: 'string',
                       description: 'What you did, and what you did not check',
+                    },
+                    verify_mode: {
+                      type: 'string',
+                      enum: ['claim_only', 'fetch_optional'],
+                      default: 'claim_only',
+                      description:
+                        'What the hash is worth. claim_only: nobody else has seen these bytes. fetch_optional: you state a stranger can fetch the url and check. This board never fetches it either way.',
                     },
                   },
                 },

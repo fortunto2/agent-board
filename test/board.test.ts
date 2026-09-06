@@ -773,3 +773,80 @@ describe('the inbox is one-to-one with the operator', () => {
     expect(n.n).toBe(0)
   })
 })
+
+
+// --- what a receipt is worth, and what it is not ---------------------------
+// Asked for by @just-nik (#15352): a public test that a delivery's sha verifies
+// against the bytes it names *even when the lease is gone*, kept separate from the
+// claim-authority tests. The split is the point — losing authority over a task must
+// not touch the evidence about work already done.
+
+describe('a receipt outlives the authority that produced it', () => {
+  it('the sha verifies against the delivered bytes with no lease in sight', async () => {
+    const bytes = new TextEncoder().encode('the exact bytes that were delivered\n')
+    const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+
+    await seedTask('receipt-outlives')
+    const key = await register('deliverer')
+    await SELF.fetch('https://board.rustman.org/v1/tasks/receipt-outlives/claim', {
+      method: 'POST', headers: auth(key),
+    })
+    await SELF.fetch('https://board.rustman.org/v1/tasks/receipt-outlives/deliver', {
+      method: 'POST', headers: auth(key),
+      body: JSON.stringify({ url: 'https://example.com/artifact', content_sha256: digest }),
+    })
+
+    // Destroy every trace of authority: the lease is gone, not merely expired.
+    await env.DB.prepare('DELETE FROM leases').run()
+
+    const seen = await (
+      await SELF.fetch('https://board.rustman.org/v1/tasks/receipt-outlives', { headers: auth(key) })
+    ).json<any>()
+    const receipt = seen.deliveries[0]
+
+    // Verification takes the artifact and nothing else. No board state is an input.
+    const recomputed = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+    expect(receipt.content_sha256).toBe(recomputed)
+    const leases = await env.DB.prepare('SELECT COUNT(*) AS n FROM leases').first<any>()
+    expect(leases.n).toBe(0)
+  })
+
+  it('says on the row what the hash is worth — claim_only unless stated otherwise', async () => {
+    await seedTask('honest-default')
+    const key = await register('honest-agent')
+    await SELF.fetch('https://board.rustman.org/v1/tasks/honest-default/claim', {
+      method: 'POST', headers: auth(key),
+    })
+    await SELF.fetch('https://board.rustman.org/v1/tasks/honest-default/deliver', {
+      method: 'POST', headers: auth(key),
+      body: JSON.stringify({ url: 'https://example.com/x', content_sha256: 'd'.repeat(64) }),
+    })
+    const seen = await (
+      await SELF.fetch('https://board.rustman.org/v1/tasks/honest-default', { headers: auth(key) })
+    ).json<any>()
+    // The default is the weaker claim. A default that overstates is the failure mode.
+    expect(seen.deliveries[0].verify_mode).toBe('claim_only')
+  })
+
+  it('a deliverer may state the stronger claim, and it is recorded as theirs', async () => {
+    await seedTask('fetchable')
+    const key = await register('fetchable-agent')
+    await SELF.fetch('https://board.rustman.org/v1/tasks/fetchable/claim', {
+      method: 'POST', headers: auth(key),
+    })
+    await SELF.fetch('https://board.rustman.org/v1/tasks/fetchable/deliver', {
+      method: 'POST', headers: auth(key),
+      body: JSON.stringify({
+        url: 'https://example.com/y', content_sha256: 'e'.repeat(64), verify_mode: 'fetch_optional',
+      }),
+    })
+    const seen = await (
+      await SELF.fetch('https://board.rustman.org/v1/tasks/fetchable', { headers: auth(key) })
+    ).json<any>()
+    expect(seen.deliveries[0].verify_mode).toBe('fetch_optional')
+  })
+})
