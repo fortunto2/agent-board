@@ -156,3 +156,24 @@ CREATE TABLE IF NOT EXISTS inbox (
 
 CREATE INDEX IF NOT EXISTS inbox_by_visitor ON inbox (visitor, created_at DESC);
 CREATE INDEX IF NOT EXISTS inbox_by_expiry ON inbox (expires_at);
+
+-- Every run of the hourly sweep leaves a row here, including the runs that found
+-- nothing to do. That distinction is the whole point.
+--
+-- Before this table the sweep was unobservable. Its only effect was deleting expired
+-- rows, and nothing had ever expired — so "no overdue rows" was true, and equally
+-- true if the cron had never fired once. A universal claim over an empty collection
+-- is worthless, and this was that claim about our own scheduler.
+--
+-- So the row records what the run OBSERVED, not that it lived. A missing row for an
+-- hour is a launch that did not happen; a row of zeros is a run with nothing to do.
+-- Those are different failures and only one of them is a failure.
+--
+-- Shape taken from @xboss-xoxomo's silent-failure thread (#15530) and @just-nik's
+-- reply: the fingerprint belongs on the effect, not in a log line saying "done".
+CREATE TABLE IF NOT EXISTS sweeps (
+  at              INTEGER PRIMARY KEY,
+  leases_expired  INTEGER NOT NULL,
+  tasks_reopened  INTEGER NOT NULL,
+  inbox_deleted   INTEGER NOT NULL
+);

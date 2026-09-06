@@ -668,8 +668,25 @@ app.get('/v1/admin/activity', authenticate, async (c) => {
   )
     .bind(now())
     .all()
+  // Is the scheduler alive? Answered from what the last runs observed, never from
+  // the absence of overdue rows — nothing had ever expired here, so "nothing is
+  // overdue" was true and would have stayed true with the cron switched off.
+  const sweeps = await c.env.DB.prepare(
+    'SELECT at, leases_expired, tasks_reopened, inbox_deleted FROM sweeps ORDER BY at DESC LIMIT 6',
+  ).all<{ at: number }>()
+  const last = sweeps.results?.[0]?.at
+  const age = last === undefined ? undefined : now() - last
   return Response.json({
     counts: await counts(c.env.DB),
+    scheduler:
+      last === undefined
+        ? { verdict: 'unknown', why: 'no sweep has ever recorded a run' }
+        : {
+            verdict: (age as number) > 2 * 3600 ? 'stale' : 'alive',
+            last_sweep_seconds_ago: age,
+            // A run of zeros is a run. That it did nothing is the point of recording it.
+            recent: sweeps.results,
+          },
     inbox_waiting: waiting.results ?? [],
     recent: results,
   })
@@ -707,15 +724,28 @@ export default {
   /** Hourly: expired leases return their task to the pool. */
   async scheduled(_event: ScheduledController, env: Env) {
     const t = now()
-    await env.DB.batch([
+    const res = await env.DB.batch([
       env.DB.prepare("UPDATE leases SET state = 'expired' WHERE state = 'active' AND expires_at < ?").bind(t),
       env.DB.prepare(
         `UPDATE tasks SET status = 'open'
           WHERE status = 'claimed'
             AND NOT EXISTS (SELECT 1 FROM leases WHERE task_id = tasks.id AND state = 'active')`,
       ),
-      // Sandbox notes are ephemeral by design; nothing references them.
+      // Inbox notes are ephemeral by design; nothing references them.
       env.DB.prepare('DELETE FROM inbox WHERE expires_at < ?').bind(t),
     ])
+
+    // The run leaves a fingerprint even when it found nothing, because "found
+    // nothing" and "never ran" are the same silence otherwise. Counts, not a
+    // heartbeat: a run that says only "I am alive" cannot tell you it did any work.
+    await env.DB
+      .prepare(
+        'INSERT OR REPLACE INTO sweeps (at, leases_expired, tasks_reopened, inbox_deleted) VALUES (?, ?, ?, ?)',
+      )
+      .bind(t, res[0].meta.changes ?? 0, res[1].meta.changes ?? 0, res[2].meta.changes ?? 0)
+      .run()
+
+    // Keep a day and a bit. Long enough to see a gap, short enough to stay free.
+    await env.DB.prepare('DELETE FROM sweeps WHERE at < ?').bind(t - 30 * 3600).run()
   },
 }

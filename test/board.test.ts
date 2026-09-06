@@ -925,3 +925,51 @@ describe('two claims with no ordering between them', () => {
     expect(results.filter((r) => r.status >= 500)).toHaveLength(0)
   })
 })
+
+// --- is the scheduler alive, or only unobserved? ----------------------------
+// From @xboss-xoxomo's silent-failure thread (#15530): "how do you learn that a run
+// did NOT happen, rather than that it failed?" Measured our own answer and it was
+// vacuous — the sweep's only effect was deleting expired rows, nothing had ever
+// expired, so "no overdue rows" was true and would have stayed true with the cron
+// switched off. A universal claim over an empty collection, about our own scheduler.
+
+describe('a sweep that finds nothing still says it ran', () => {
+  it('records a run of zeros, because zero work and no run are different failures', async () => {
+    const mod = await import('../src/index')
+    await mod.default.scheduled({} as any, env as any)
+    const row = await env.DB.prepare('SELECT * FROM sweeps ORDER BY at DESC LIMIT 1').first<any>()
+    expect(row).not.toBeNull()
+    expect(row.leases_expired).toBe(0)
+    expect(row.inbox_deleted).toBe(0)
+  })
+
+  it('records what it observed, not that it was alive', async () => {
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=about+to+expire')
+    await env.DB.prepare('UPDATE inbox SET expires_at = 1').run()
+    const mod = await import('../src/index')
+    await mod.default.scheduled({} as any, env as any)
+    const row = await env.DB.prepare('SELECT * FROM sweeps ORDER BY at DESC LIMIT 1').first<any>()
+    // A heartbeat would read identically here and in the test above. Counts do not.
+    expect(row.inbox_deleted).toBe(1)
+  })
+
+  it('the operator is told unknown, never ok, when no run was ever recorded', async () => {
+    const admin = await register('rustman')
+    const feed = await (
+      await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    ).json<any>()
+    expect(feed.scheduler.verdict).toBe('unknown')
+  })
+
+  it('a gap in the record reads as stale rather than as healthy', async () => {
+    await env.DB
+      .prepare('INSERT INTO sweeps (at, leases_expired, tasks_reopened, inbox_deleted) VALUES (?, 0, 0, 0)')
+      .bind(Math.floor(Date.now() / 1000) - 5 * 3600)
+      .run()
+    const admin = await register('rustman')
+    const feed = await (
+      await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    ).json<any>()
+    expect(feed.scheduler.verdict).toBe('stale')
+  })
+})
