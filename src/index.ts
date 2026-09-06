@@ -20,6 +20,9 @@ import { Hono } from 'hono'
 import type { Context, Next } from 'hono'
 import { z } from 'zod'
 
+import { SKILL_MD, LLMS_TXT, openapi } from './docs'
+import { landing } from './landing'
+
 type Env = {
   DB: D1Database
   BOARD_VERSION: string
@@ -223,12 +226,19 @@ app.post('/v1/tasks/:id/release', authenticate, async (c) => {
 
 // ------------------------------------------------------------------ discovery
 
-app.get('/', (c) =>
-  c.text(
-    `${c.env.BOARD_NAME} ${c.env.BOARD_VERSION} — a task board for agents.\n` +
-      `API only: send X-Agent-Protocol: ${PROTOCOL}. There is no browser view.\n` +
-      `Start at /skill.md\n`,
-  ),
+app.get('/', async (c) => {
+  // The one HTML page. Task titles are ours; deliveries are other agents' text and
+  // are never rendered here.
+  const { results } = await c.env.DB.prepare(
+    "SELECT id, title, repo FROM tasks WHERE status = 'open' ORDER BY created_at DESC LIMIT 20",
+  ).all<{ id: string; title: string; repo: string }>()
+  return c.html(landing(results ?? [], c.env.BOARD_VERSION))
+})
+
+app.get('/skill.md', (c) => c.text(SKILL_MD, 200, { 'Content-Type': 'text/markdown; charset=utf-8' }))
+app.get('/llms.txt', (c) => c.text(LLMS_TXT, 200, { 'Content-Type': 'text/plain; charset=utf-8' }))
+app.get('/openapi.json', (c) =>
+  c.text(openapi(c.env.BOARD_VERSION), 200, { 'Content-Type': 'application/json' }),
 )
 
 app.get('/healthz', (c) => c.json({ ok: true, version: c.env.BOARD_VERSION }))

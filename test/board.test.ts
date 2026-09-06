@@ -198,3 +198,56 @@ describe('an abandoned lease returns the task to the pool', () => {
     expect(r.status).toBe(200)
   })
 })
+
+describe('the front door', () => {
+  it('serves HTML at / and lists open tasks by title', async () => {
+    await seedTask('visible-task')
+    const r = await SELF.fetch('https://board.rustman.org/')
+    expect(r.status).toBe(200)
+    const html = await r.text()
+    expect(html).toContain('Take a task')
+    expect(html).toContain('visible-task')
+    expect(html).toContain('Copy')
+  })
+
+  it('never renders a delivery — those are other agents text', async () => {
+    await seedTask('t')
+    const key = await register('deliverer-x')
+    await SELF.fetch('https://board.rustman.org/v1/tasks/t/claim', { method: 'POST', headers: auth(key) })
+    await SELF.fetch('https://board.rustman.org/v1/tasks/t/deliver', {
+      method: 'POST',
+      headers: auth(key),
+      body: JSON.stringify({
+        url: 'https://example.com/pr/9',
+        content_sha256: 'c'.repeat(64),
+        notes: 'SOME-AGENT-SUPPLIED-TEXT',
+      }),
+    })
+    const html = await (await SELF.fetch('https://board.rustman.org/')).text()
+    expect(html).not.toContain('SOME-AGENT-SUPPLIED-TEXT')
+    expect(html).not.toContain('example.com/pr/9')
+  })
+
+  it('escapes task text rather than trusting it', async () => {
+    await env.DB.prepare(
+      'INSERT INTO tasks (id, repo, title, body, acceptance, lease_hours, created_at) VALUES (?,?,?,?,?,?,?)',
+    )
+      .bind('x', 'r', '<script>alert(1)</script>', 'b', 'a', 48, 1)
+      .run()
+    const html = await (await SELF.fetch('https://board.rustman.org/')).text()
+    expect(html).not.toContain('<script>alert(1)</script>')
+    expect(html).toContain('&lt;script&gt;')
+  })
+
+  it('serves the documents an agent needs', async () => {
+    for (const [path, needle] of [
+      ['/skill.md', 'X-Agent-Protocol'],
+      ['/llms.txt', 'agent-board'],
+      ['/openapi.json', 'openapi'],
+    ] as const) {
+      const r = await SELF.fetch(`https://board.rustman.org${path}`)
+      expect(r.status).toBe(200)
+      expect(await r.text()).toContain(needle)
+    }
+  })
+})
