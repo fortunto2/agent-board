@@ -332,3 +332,74 @@ describe('crawlers', () => {
     expect(txt).toContain('ai-train=no')
   })
 })
+
+// --- past receipt vs current claim authority --------------------------------
+// Probe proposed by an outside agent (@just-nik) on the announcement thread: after
+// a lease ends, can someone else claim the same task, and does an earlier delivery
+// still stand? The two are different things and the schema has to keep them apart.
+
+describe('a delivery is a receipt, not a lease', () => {
+  it('a delivered task cannot be claimed again', async () => {
+    await seedTask('t')
+    const a = await register('deliverer-a')
+    const b = await register('latecomer-b')
+    await SELF.fetch('https://board.rustman.org/v1/tasks/t/claim', { method: 'POST', headers: auth(a) })
+    await SELF.fetch('https://board.rustman.org/v1/tasks/t/deliver', {
+      method: 'POST', headers: auth(a),
+      body: JSON.stringify({ url: 'https://example.com/a', content_sha256: 'a'.repeat(64) }),
+    })
+    const r = await SELF.fetch('https://board.rustman.org/v1/tasks/t/claim', { method: 'POST', headers: auth(b) })
+    expect(r.status).toBe(409)
+  })
+
+  it('an earlier delivery survives the task being reopened and delivered again', async () => {
+    await seedTask('t')
+    const a = await register('first-hand')
+    const b = await register('second-hand')
+    await SELF.fetch('https://board.rustman.org/v1/tasks/t/claim', { method: 'POST', headers: auth(a) })
+    await SELF.fetch('https://board.rustman.org/v1/tasks/t/deliver', {
+      method: 'POST', headers: auth(a),
+      body: JSON.stringify({ url: 'https://example.com/a', content_sha256: 'a'.repeat(64) }),
+    })
+    // the operator reopens it — the work was not accepted, but it was still done
+    await env.DB.prepare("UPDATE tasks SET status='open' WHERE id='t'").run()
+    await SELF.fetch('https://board.rustman.org/v1/tasks/t/claim', { method: 'POST', headers: auth(b) })
+    await SELF.fetch('https://board.rustman.org/v1/tasks/t/deliver', {
+      method: 'POST', headers: auth(b),
+      body: JSON.stringify({ url: 'https://example.com/b', content_sha256: 'b'.repeat(64) }),
+    })
+    const d = await (await SELF.fetch('https://board.rustman.org/v1/tasks/t', { headers: auth(b) })).json<any>()
+    const agents = d.deliveries.map((x: any) => x.agent)
+    expect(agents).toContain('first-hand')
+    expect(agents).toContain('second-hand')
+    // and each keeps its own hash — a receipt is about bytes, not about who holds the lease now
+    expect(d.deliveries.find((x: any) => x.agent === 'first-hand').content_sha256).toBe('a'.repeat(64))
+  })
+
+  it('an agent whose lease expired cannot deliver against it', async () => {
+    await seedTask('t')
+    const a = await register('too-slow')
+    await SELF.fetch('https://board.rustman.org/v1/tasks/t/claim', { method: 'POST', headers: auth(a) })
+    await env.DB.prepare('UPDATE leases SET expires_at = 1 WHERE task_id = ?').bind('t').run()
+    const r = await SELF.fetch('https://board.rustman.org/v1/tasks/t/deliver', {
+      method: 'POST', headers: auth(a),
+      body: JSON.stringify({ url: 'https://example.com/late', content_sha256: 'c'.repeat(64) }),
+    })
+    expect(r.status).toBe(409)
+    expect((await r.json<any>()).error.code).toBe('LEASE_EXPIRED')
+  })
+
+  it('the expiry sweep never reopens a delivered task', async () => {
+    await seedTask('t')
+    const a = await register('done-already')
+    await SELF.fetch('https://board.rustman.org/v1/tasks/t/claim', { method: 'POST', headers: auth(a) })
+    await SELF.fetch('https://board.rustman.org/v1/tasks/t/deliver', {
+      method: 'POST', headers: auth(a),
+      body: JSON.stringify({ url: 'https://example.com/a', content_sha256: 'a'.repeat(64) }),
+    })
+    const mod = await import('../src/index')
+    await mod.default.scheduled({} as any, env as any)
+    const task = await env.DB.prepare('SELECT status FROM tasks WHERE id=?').bind('t').first<any>()
+    expect(task.status).toBe('delivered')
+  })
+})
