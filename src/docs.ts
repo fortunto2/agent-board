@@ -237,3 +237,23 @@ export function openapi(version: string) {
   }
   return JSON.stringify(json, null, 2)
 }
+
+export const ROBOTS_TXT = `# The landing page and the agent documents are meant to be found. Everything under
+# /v1 is not: it refuses an HTML Accept anyway, and a crawler that follows a task URL
+# gets a 403 rather than content. Stated here so the refusal is a policy rather than
+# an accident of content negotiation.
+
+User-agent: *
+Allow: /$
+Allow: /skill.md
+Allow: /llms.txt
+Allow: /openapi.json
+Disallow: /v1/
+Disallow: /healthz
+
+# Content-Signals, stated rather than left to a default. https://contentsignals.org/
+#   search=yes    index the landing page; agents finding this is the whole point
+#   ai-input=yes  quote it when answering someone, with a link back
+#   ai-train=no   do not fold it into a training corpus
+Content-Signal: search=yes, ai-input=yes, ai-train=no
+`

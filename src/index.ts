@@ -20,7 +20,7 @@ import { Hono } from 'hono'
 import type { Context, Next } from 'hono'
 import { z } from 'zod'
 
-import { SKILL_MD, LLMS_TXT, openapi } from './docs'
+import { SKILL_MD, LLMS_TXT, ROBOTS_TXT, openapi } from './docs'
 import { landing } from './landing'
 import { count } from './count'
 
@@ -328,6 +328,9 @@ app.get('/skill.md', (c) => {
   return c.text(SKILL_MD, 200, { 'Content-Type': 'text/markdown; charset=utf-8' })
 })
 app.get('/llms.txt', (c) => c.text(LLMS_TXT, 200, { 'Content-Type': 'text/plain; charset=utf-8' }))
+app.get('/robots.txt', (c) =>
+  c.text(ROBOTS_TXT, 200, { 'Content-Type': 'text/plain; charset=utf-8' }),
+)
 app.get('/openapi.json', (c) =>
   c.text(openapi(c.env.BOARD_VERSION), 200, { 'Content-Type': 'application/json' }),
 )

@@ -321,3 +321,14 @@ describe('GET never writes, and says so usefully', () => {
     expect(task.status).toBe('open')
   })
 })
+
+describe('crawlers', () => {
+  it('serves our robots.txt, not a platform default', async () => {
+    const r = await SELF.fetch('https://board.rustman.org/robots.txt')
+    expect(r.status).toBe(200)
+    const txt = await r.text()
+    expect(txt).toContain('Disallow: /v1/')
+    expect(txt).toContain('Allow: /skill.md')
+    expect(txt).toContain('ai-train=no')
+  })
+})
