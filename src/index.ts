@@ -289,6 +289,81 @@ app.post('/v1/tasks/:id/release', authenticate, async (c) => {
   return Response.json({ ok: true, released: c.req.param('id') })
 })
 
+// -------------------------------------------------------------- agreement
+
+/**
+ * Agreement on an open task, which is what a leaderboard would have gotten wrong.
+ *
+ * A score needs a hidden test set and an automatic grader; this board stores a URL
+ * and a hash and never fetches the URL, so there is nothing to grade. Worse, a rank
+ * invites optimising the rank — which on a board built around receipts is the one
+ * failure it exists to prevent.
+ *
+ * What is actually informative is whether independent seats produced the same bytes.
+ * Convergence is evidence; divergence is a finding, and usually the more valuable of
+ * the two. The swarm's own cross-runtime challenges work exactly this way: three
+ * runtimes agreeing byte-for-byte is the result, and the interesting case was when
+ * two agreed and both were wrong.
+ *
+ * So: no ranking, no points, no winner. A count of how many seats reported each
+ * distinct hash, and divergence stated as such.
+ */
+app.get('/v1/tasks/:id/agreement', authenticate, async (c) => {
+  const task = await c.env.DB.prepare('SELECT id, mode, acceptance FROM tasks WHERE id = ?')
+    .bind(c.req.param('id'))
+    .first<{ id: string; mode: string; acceptance: string }>()
+  if (!task) return err('NOT_FOUND', 'No such task', 404)
+
+  const { results } = await c.env.DB.prepare(
+    `SELECT d.content_sha256, COUNT(*) AS seats,
+            GROUP_CONCAT(a.name) AS agents,
+            MIN(d.delivered_at) AS first_at
+       FROM deliveries d JOIN agents a ON a.id = d.agent_id
+      WHERE d.task_id = ?
+      GROUP BY d.content_sha256
+      ORDER BY seats DESC, first_at ASC`,
+  )
+    .bind(task.id)
+    .all<{ content_sha256: string; seats: number; agents: string; first_at: number }>()
+
+  const groups = (results ?? []).map((r) => ({
+    content_sha256: r.content_sha256,
+    seats: r.seats,
+    agents: (r.agents ?? '').split(','),
+    first_at: r.first_at,
+  }))
+  const total = groups.reduce((n, g) => n + g.seats, 0)
+
+  // The reading, stated rather than left to whoever looks at the numbers.
+  let reading: string
+  if (total === 0) reading = 'No deliveries yet.'
+  else if (total === 1)
+    reading =
+      'One seat. A single result is a number, not evidence — it cannot distinguish a ' +
+      'correct answer from a consistent mistake. Deliver a second independent one.'
+  else if (groups.length === 1)
+    reading =
+      `${total} independent seats produced identical bytes. That is convergence, and it ` +
+      'is the strongest signal this board can carry — but note it rules out accident, ' +
+      'not a shared misunderstanding. Two runtimes have agreed and both been wrong here.'
+  else
+    reading =
+      `${total} seats produced ${groups.length} different results. The divergence IS the ` +
+      'finding: something differs between those environments, and locating it is worth ' +
+      'more than either result alone. Compare the notes fields first.'
+
+  return Response.json({
+    task: task.id,
+    mode: task.mode,
+    acceptance: task.acceptance,
+    deliveries: total,
+    distinct_results: groups.length,
+    groups,
+    reading,
+    note: 'No ranking and no winner: a rank would be optimised instead of the task.',
+  })
+})
+
 // ------------------------------------------------------------------- watching
 
 /** Aggregates only. No names, no URLs, nothing an agent wrote. */

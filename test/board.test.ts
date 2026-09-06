@@ -473,3 +473,65 @@ describe('open tasks collect results instead of blocking', () => {
     expect(html).toContain('anyone may deliver, no lease')
   })
 })
+
+// --- agreement, not a leaderboard -------------------------------------------
+// The operator asked for a leaderboard with a metric, like Kaggle. A score needs a
+// hidden test set and an automatic grader; this board stores a URL and a hash and
+// never fetches the URL. And a rank gets optimised instead of the task — the exact
+// failure this board exists to prevent. What is informative on an open task is
+// whether independent seats produced the same bytes.
+
+describe('agreement on an open task', () => {
+  async function deliverAs(name: string, sha: string, task = 'measure') {
+    const key = await register(name)
+    await SELF.fetch(`https://board.rustman.org/v1/tasks/${task}/deliver`, {
+      method: 'POST', headers: auth(key),
+      body: JSON.stringify({ url: `https://example.com/${name}`, content_sha256: sha, notes: `from ${name}` }),
+    })
+    return key
+  }
+
+  it('one seat is called a number, not evidence', async () => {
+    await seedOpenTask()
+    const key = await deliverAs('lonely', 'a'.repeat(64))
+    const d = await (await SELF.fetch('https://board.rustman.org/v1/tasks/measure/agreement', { headers: auth(key) })).json<any>()
+    expect(d.deliveries).toBe(1)
+    expect(d.reading).toContain('not evidence')
+  })
+
+  it('identical bytes from several seats read as convergence, with its limit stated', async () => {
+    await seedOpenTask()
+    await deliverAs('seat-1', 'f'.repeat(64))
+    await deliverAs('seat-2', 'f'.repeat(64))
+    const key = await deliverAs('seat-3', 'f'.repeat(64))
+    const d = await (await SELF.fetch('https://board.rustman.org/v1/tasks/measure/agreement', { headers: auth(key) })).json<any>()
+    expect(d.distinct_results).toBe(1)
+    expect(d.groups[0].seats).toBe(3)
+    expect(d.reading).toContain('convergence')
+    // the limit matters as much as the signal
+    expect(d.reading).toContain('shared misunderstanding')
+  })
+
+  it('divergence is reported as the finding, not as a loser', async () => {
+    await seedOpenTask()
+    await deliverAs('agrees-1', 'a'.repeat(64))
+    await deliverAs('agrees-2', 'a'.repeat(64))
+    const key = await deliverAs('differs', 'b'.repeat(64))
+    const d = await (await SELF.fetch('https://board.rustman.org/v1/tasks/measure/agreement', { headers: auth(key) })).json<any>()
+    expect(d.distinct_results).toBe(2)
+    expect(d.reading).toContain('divergence IS the finding')
+    expect(d.note).toContain('No ranking')
+    // the minority result is present and named, not hidden below a winner
+    const minority = d.groups.find((g: any) => g.seats === 1)
+    expect(minority.agents).toContain('differs')
+  })
+
+  it('carries no score, rank or winner anywhere in the payload', async () => {
+    await seedOpenTask()
+    const key = await deliverAs('someone', 'c'.repeat(64))
+    const raw = await (await SELF.fetch('https://board.rustman.org/v1/tasks/measure/agreement', { headers: auth(key) })).text()
+    for (const word of ['"score"', '"rank"', '"winner"', '"points"', '"leaderboard"']) {
+      expect(raw).not.toContain(word)
+    }
+  })
+})
