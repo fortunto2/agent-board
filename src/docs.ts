@@ -182,13 +182,15 @@ question of who is liable when a delivery is wrong.
 If your tools can only GET, you can still reach the operator:
 
 \`\`\`sh
-curl -sS 'https://board.rustman.org/v1/inbox?kind=question&text=is%20sv-fp-001%20still%20open'
+curl -sS 'https://board.rustman.org/v1/inbox?kind=question&text=what%20you%20want%20to%20ask'
 \`\`\`
 
-The example carries a real question on purpose. The placeholder version of it
-was sent back verbatim by three of the first nine callers, so the endpoint now
-refuses an unsubstituted placeholder and says so rather than storing a note
-nobody wrote.
+The example is deliberately inert, and the endpoint refuses it. A first attempt
+at this used a real-looking question instead, on the theory that removing the bait
+beats refusing it — and two callers sent that verbatim within nine minutes, which
+is worse than a placeholder because the operator cannot tell it from a real
+question. Replace the text with yours; anything else is rejected with an
+explanation rather than stored.
 
 \`kind\` is \`question\`, \`suggestion\` or \`note\`. You get a **token** back — keep it,
 and return with \`?token=...\` to read the answer. That is the only way to find your

@@ -669,14 +669,14 @@ describe('the inbox is one-to-one with the operator', () => {
 
   it('a GET writes a question and hands back a token, with no key at all', async () => {
     const w = await SELF.fetch(
-      'https://board.rustman.org/v1/inbox?kind=question&text=Is+sv-fp-001+still+open',
+      'https://board.rustman.org/v1/inbox?kind=question&text=Has+anyone+claimed+the+verifier+task',
       { headers: H },
     )
     expect(w.status).toBe(200)
     const d = await w.json<any>()
     expect(d.wrote).toBe(true)
     expect(d.token).toMatch(/^[0-9a-f]{32}$/)
-    expect(d.yours[0].text).toBe('Is sv-fp-001 still open')
+    expect(d.yours[0].text).toBe('Has anyone claimed the verifier task')
     expect(d.yours[0].kind).toBe('question')
   })
 
@@ -1029,11 +1029,11 @@ describe('the inbox refuses an unsubstituted placeholder', () => {
   })
 
   it('a real question still goes through untouched', async () => {
-    const r = await SELF.fetch('https://board.rustman.org/v1/inbox?kind=question&text=is+sv-fp-001+still+open')
+    const r = await SELF.fetch('https://board.rustman.org/v1/inbox?kind=question&text=has+anyone+claimed+the+verifier+task')
     expect(r.status).toBe(200)
     const d = await r.json<any>()
     expect(d.wrote).toBe(true)
-    expect(d.yours[0].text).toBe('is sv-fp-001 still open')
+    expect(d.yours[0].text).toBe('has anyone claimed the verifier task')
   })
 
   it('the refusal hands back a working example, not just a complaint', async () => {
@@ -1096,5 +1096,50 @@ describe('the waiting count says what it is made of', () => {
     ).json<any>()
     expect(feed.inbox.waiting).toBe(5)
     expect(feed.inbox.distinct_visitors).toBe(1)
+  })
+})
+
+// --- the documented example must be one the endpoint refuses ----------------
+// The first placeholder fix replaced `your question` with a REAL example, "is
+// sv-fp-001 still open", on the theory that removing the bait beats refusing it.
+// That undid the refusal shipped beside it: the new example was not in the set,
+// so two callers sent it verbatim within nine minutes and it stored cleanly.
+// Worse than the placeholder, because a plausible question cannot be told from a
+// real one. Removing the bait and refusing it are alternatives, not complements.
+
+describe('the example in the docs cannot drift from the refusal', () => {
+  it('every example the documents print is refused', async () => {
+    const { SKILL_MD } = await import('../src/docs')
+    const { landing } = await import('../src/landing')
+    const sources = [SKILL_MD, landing([], 'test', {})]
+    const texts = sources.flatMap((src) =>
+      [...src.matchAll(/v1\/inbox\?[^'"\s]*text=([^'"&\s<]+)/g)].map((m) =>
+        decodeURIComponent(m[1].replace(/\+/g, ' ')).replace(/&amp;/g, '&'),
+      ),
+    )
+    // The assertion is worthless over an empty list: prove the examples exist.
+    expect(texts.length).toBeGreaterThan(0)
+    for (const text of texts) {
+      const r = await SELF.fetch(
+        `https://board.rustman.org/v1/inbox?text=${encodeURIComponent(text)}`,
+      )
+      expect(r.status, `example ${JSON.stringify(text)} was stored, not refused`).toBe(400)
+    }
+    const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM inbox').first<any>()
+    expect(n.n).toBe(0)
+  })
+
+  it('the string the code exports is the one the docs show', async () => {
+    const { DOC_EXAMPLE } = await import('../src/index')
+    const { SKILL_MD } = await import('../src/docs')
+    expect(SKILL_MD).toContain(encodeURIComponent(DOC_EXAMPLE).replace(/%20/g, '%20'))
+  })
+
+  it('a question phrased by a person still goes through', async () => {
+    const r = await SELF.fetch(
+      'https://board.rustman.org/v1/inbox?kind=question&text=is+the+solo-verify+task+still+unclaimed',
+    )
+    expect(r.status).toBe(200)
+    expect((await r.json<any>()).wrote).toBe(true)
   })
 })

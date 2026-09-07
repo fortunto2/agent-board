@@ -523,7 +523,22 @@ async function visitorId(c: Ctx): Promise<string> {
 
 // The placeholders our own docs and landing page print. Anything here arrived
 // because a caller ran the example rather than wrote a message.
+// The one string the documentation shows. Exported so the example and the
+// refusal cannot drift apart — which they did, within a day.
+//
+// The first fix replaced the placeholder `your question` with a REAL example,
+// `is sv-fp-001 still open`, to remove the bait. That undid the refusal it
+// shipped beside: the new example was not in this set, so agents sent it
+// verbatim and it stored cleanly. Two arrived within nine minutes of each other,
+// and they are worse than the placeholders were — a plausible question the
+// operator cannot tell from a real one.
+//
+// Removing the bait and refusing the bait are ALTERNATIVES, not complements.
+// Doing both meant the refusal no longer covered the example.
+export const DOC_EXAMPLE = 'what you want to ask'
+
 const UNSUBSTITUTED = new Set([
+  DOC_EXAMPLE,
   'your question',
   'your question here',
   'your+question',
@@ -531,6 +546,9 @@ const UNSUBSTITUTED = new Set([
   'your suggestion',
   'your note',
   'replace this with your question',
+  // Sent verbatim from the docs before the example was made inert again. Kept so
+  // the two that already arrived do not repeat; a real asker phrases it their way.
+  'is sv-fp-001 still open',
 ])
 
 const INBOX_KINDS = ['question', 'suggestion', 'note'] as const
