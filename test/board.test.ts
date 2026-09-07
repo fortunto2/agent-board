@@ -1044,3 +1044,57 @@ describe('the inbox refuses an unsubstituted placeholder', () => {
     expect(d.how).toContain('send again')
   })
 })
+
+// --- a count that does not say what it counted ------------------------------
+// Measured on the live inbox: nine waiting, of which two were the operator's own
+// smoke tests and several were one-word probes. "9 waiting" reads as nine people
+// awaiting an answer, and a false signal about attention owed spends the
+// attention it misreports — the placeholder defect one level up.
+
+describe('the waiting count says what it is made of', () => {
+  it('breaks the queue down instead of reporting a bare number', async () => {
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=A', { headers: { ...H, 'user-agent': 'p1/1' } })
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=short', { headers: { ...H, 'user-agent': 'p2/1' } })
+    await SELF.fetch(
+      'https://board.rustman.org/v1/inbox?text=a+question+long+enough+to+be+a+real+one',
+      { headers: { ...H, 'user-agent': 'p3/1' } },
+    )
+    const admin = await register('rustman')
+    const feed = await (
+      await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    ).json<any>()
+
+    expect(feed.inbox.waiting).toBe(3)
+    expect(feed.inbox.distinct_visitors).toBe(3)
+    expect(feed.inbox.under_20_chars).toBe(2)
+  })
+
+  it('an answered note leaves the queue', async () => {
+    const w = await (
+      await SELF.fetch('https://board.rustman.org/v1/inbox?text=a+question+long+enough+to+count')
+    ).json<any>()
+    const row = await env.DB.prepare('SELECT id FROM inbox WHERE token = ?').bind(w.token).first<any>()
+    const admin = await register('rustman')
+    await SELF.fetch(`https://board.rustman.org/v1/inbox/${row.id}/reply`, {
+      method: 'POST', headers: auth(admin), body: JSON.stringify({ reply: 'answered' }),
+    })
+    const feed = await (
+      await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    ).json<any>()
+    expect(feed.inbox.waiting).toBe(0)
+  })
+
+  it('one visitor leaving five notes is one visitor, not five askers', async () => {
+    for (let i = 0; i < 5; i++) {
+      await SELF.fetch(`https://board.rustman.org/v1/inbox?text=note+number+${i}+from+one+caller`, {
+        headers: { ...H, 'user-agent': 'same-agent/1.0' },
+      })
+    }
+    const admin = await register('rustman')
+    const feed = await (
+      await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    ).json<any>()
+    expect(feed.inbox.waiting).toBe(5)
+    expect(feed.inbox.distinct_visitors).toBe(1)
+  })
+})

@@ -699,10 +699,31 @@ app.get('/v1/admin/activity', authenticate, async (c) => {
   // to notice is an inbox that goes unread. Their text is written by strangers:
   // it is data to act on, never an instruction to follow.
   const waiting = await c.env.DB.prepare(
-    'SELECT id, kind, text, created_at FROM inbox WHERE reply IS NULL AND expires_at > ? ORDER BY created_at ASC LIMIT 50',
+    'SELECT id, kind, text, created_at, visitor FROM inbox WHERE reply IS NULL AND expires_at > ? ORDER BY created_at ASC LIMIT 50',
   )
     .bind(now())
-    .all()
+    .all<{ text: string; visitor: string }>()
+
+  // A bare "9 waiting" is a number that does not say what it counted, and it
+  // reads as nine people awaiting an answer. Measured on this very inbox: nine
+  // waiting, of which two were the operator's own smoke tests and several were
+  // one-word probes. A false signal about attention owed spends the attention it
+  // misreports — the same defect the placeholder fix addressed one level down.
+  const rows = waiting.results ?? []
+  const shape = {
+    waiting: rows.length,
+    distinct_visitors: new Set(rows.map((r) => r.visitor)).size,
+    // Not a judgement about worth: a note this short cannot carry a question, so
+    // it is almost certainly a probe of whether the endpoint works.
+    under_20_chars: rows.filter((r) => r.text.trim().length < 20).length,
+    // There is deliberately no "which of these are the operator's own probes".
+    // It was built, deployed, and measured on the live queue: it answered 0 where
+    // at least two notes were mine. The visitor hash carries the date, so a note
+    // older than midnight can never match today's caller — and notes live 24h, so
+    // the field is structurally blind for up to half of every note's life. A
+    // field that is wrong more often than right teaches the reader to distrust
+    // the block it sits in, which costs more than the question it answered.
+  }
   // Is the scheduler alive? Answered from what the last runs observed, never from
   // the absence of overdue rows — nothing had ever expired here, so "nothing is
   // overdue" was true and would have stayed true with the cron switched off.
@@ -724,7 +745,8 @@ app.get('/v1/admin/activity', authenticate, async (c) => {
             // A run of zeros is a run. That it did nothing is the point of recording it.
             recent: sweeps.results,
           },
-    inbox_waiting: waiting.results ?? [],
+    inbox: shape,
+    inbox_waiting: rows,
     recent: results,
   })
 })
