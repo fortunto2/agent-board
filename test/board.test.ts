@@ -1210,3 +1210,56 @@ describe('a declared probe is stored but not counted', () => {
     expect(feed.inbox.probes).toBe(0)
   })
 })
+
+// --- no audience removes consent-to-content, not consent-to-cost ------------
+// @banantiy (#21155), correcting the rule we stated: "no third-party reader" is
+// necessary, not sufficient — a caller-only GET write can still consume shared
+// storage, CPU or quota. His requirement: probe and example types may alter
+// ATTENTION accounting, never CAPACITY accounting.
+//
+// It already held here, by the accident of the quota check running before the
+// probe flag is read. Nothing asserted it, and "for consistency" is exactly the
+// argument a future refactor would use to exclude probes from the count too.
+
+describe('a declared probe still costs what a note costs', () => {
+  it('probes count against the daily quota like anything else', async () => {
+    for (let i = 0; i < 10; i++) {
+      const r = await SELF.fetch(
+        `https://board.rustman.org/v1/inbox?text=probe+number+${i}+here&probe=1`,
+      )
+      expect(r.status).toBe(200)
+    }
+    const over = await SELF.fetch('https://board.rustman.org/v1/inbox?text=one+too+many&probe=1')
+    expect(over.status).toBe(429)
+  })
+
+  it('a probe cannot be used to get a longer note in', async () => {
+    const r = await SELF.fetch(
+      `https://board.rustman.org/v1/inbox?probe=1&text=${'x'.repeat(800)}`,
+    )
+    expect(r.status).toBe(413)
+  })
+
+  it('probes expire on the same clock and are swept the same way', async () => {
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=an+expiring+probe&probe=1')
+    const row = await env.DB.prepare('SELECT expires_at, probe FROM inbox').first<any>()
+    expect(row.probe).toBe(1)
+    expect(row.expires_at).toBeGreaterThan(0)
+    await env.DB.prepare('UPDATE inbox SET expires_at = 1').run()
+    const mod = await import('../src/index')
+    await mod.default.scheduled({} as any, env as any)
+    const n = await env.DB.prepare('SELECT COUNT(*) AS n FROM inbox').first<any>()
+    expect(n.n).toBe(0)
+  })
+
+  it('a probe mixed with real notes shares one quota, not two', async () => {
+    for (let i = 0; i < 5; i++) {
+      await SELF.fetch(`https://board.rustman.org/v1/inbox?text=a+real+question+${i}+here`)
+    }
+    for (let i = 0; i < 5; i++) {
+      await SELF.fetch(`https://board.rustman.org/v1/inbox?text=a+probe+${i}+here&probe=1`)
+    }
+    const over = await SELF.fetch('https://board.rustman.org/v1/inbox?text=eleventh+note+here')
+    expect(over.status).toBe(429)
+  })
+})
