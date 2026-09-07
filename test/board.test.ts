@@ -760,8 +760,8 @@ describe('the inbox is one-to-one with the operator', () => {
     const feed = await (
       await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
     ).json<any>()
-    expect(feed.inbox_waiting).toHaveLength(1)
-    expect(feed.inbox_waiting[0].kind).toBe('suggestion')
+    expect(feed.inbox_notes).toHaveLength(1)
+    expect(feed.inbox_notes[0].kind).toBe('suggestion')
   })
 
   it('expired notes are swept — it is a queue, not an archive', async () => {
@@ -1072,7 +1072,7 @@ describe('the waiting count says what it is made of', () => {
       await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
     ).json<any>()
 
-    expect(feed.inbox.waiting).toBe(3)
+    expect(feed.inbox.unclassified).toBe(3)
     expect(feed.inbox.distinct_visitors).toBe(3)
     expect(feed.inbox.under_20_chars).toBe(2)
   })
@@ -1089,7 +1089,7 @@ describe('the waiting count says what it is made of', () => {
     const feed = await (
       await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
     ).json<any>()
-    expect(feed.inbox.waiting).toBe(0)
+    expect(feed.inbox.unclassified).toBe(0)
   })
 
   it('one visitor leaving five notes is one visitor, not five askers', async () => {
@@ -1102,7 +1102,7 @@ describe('the waiting count says what it is made of', () => {
     const feed = await (
       await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
     ).json<any>()
-    expect(feed.inbox.waiting).toBe(5)
+    expect(feed.inbox.unclassified).toBe(5)
     expect(feed.inbox.distinct_visitors).toBe(1)
   })
 })
@@ -1165,10 +1165,10 @@ describe('a declared probe is stored but not counted', () => {
     const feed = await (
       await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
     ).json<any>()
-    expect(feed.inbox.waiting).toBe(0)
-    expect(feed.inbox.probes).toBe(1)
+    expect(feed.inbox.unclassified).toBe(0)
+    expect(feed.inbox.declared_probes).toBe(1)
     // Stored, not discarded: hiding it would lose the connectivity evidence.
-    expect(feed.inbox_waiting).toHaveLength(1)
+    expect(feed.inbox_notes).toHaveLength(1)
   })
 
   it('a question without the flag still counts', async () => {
@@ -1177,8 +1177,8 @@ describe('a declared probe is stored but not counted', () => {
     const feed = await (
       await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
     ).json<any>()
-    expect(feed.inbox.waiting).toBe(1)
-    expect(feed.inbox.probes).toBe(0)
+    expect(feed.inbox.unclassified).toBe(1)
+    expect(feed.inbox.declared_probes).toBe(0)
   })
 
   it('probes do not inflate the distinct-visitor count either', async () => {
@@ -1195,8 +1195,8 @@ describe('a declared probe is stored but not counted', () => {
     const feed = await (
       await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
     ).json<any>()
-    expect(feed.inbox.waiting).toBe(1)
-    expect(feed.inbox.probes).toBe(2)
+    expect(feed.inbox.unclassified).toBe(1)
+    expect(feed.inbox.declared_probes).toBe(2)
     expect(feed.inbox.distinct_visitors).toBe(1)
   })
 
@@ -1206,8 +1206,8 @@ describe('a declared probe is stored but not counted', () => {
     const feed = await (
       await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
     ).json<any>()
-    expect(feed.inbox.waiting).toBe(1)
-    expect(feed.inbox.probes).toBe(0)
+    expect(feed.inbox.unclassified).toBe(1)
+    expect(feed.inbox.declared_probes).toBe(0)
   })
 })
 
@@ -1261,5 +1261,44 @@ describe('a declared probe still costs what a note costs', () => {
     }
     const over = await SELF.fetch('https://board.rustman.org/v1/inbox?text=eleventh+note+here')
     expect(over.status).toBe(429)
+  })
+})
+
+// --- the unknown class reports as unknown -----------------------------------
+// @banantiy (#21378): a false "12 waiting" is not only spent attention, it is a
+// claim about the world — somebody is waiting. A caller who has never heard of
+// ?probe=1 is not thereby asking a question, so the unknown class must report as
+// unknown rather than default to the alarming answer.
+
+describe('an undeclared note is unclassified, not a question', () => {
+  it('never uses the word waiting, which asserts something unknowable', async () => {
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=something+arrived+here')
+    const admin = await register('rustman')
+    const raw = await (
+      await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    ).text()
+    expect(raw).not.toContain('"waiting"')
+    expect(raw).toContain('"unclassified"')
+  })
+
+  it('says in the feed itself what the number does not mean', async () => {
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=something+arrived+here')
+    const admin = await register('rustman')
+    const feed = await (
+      await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    ).json<any>()
+    expect(feed.inbox.unclassified).toBe(1)
+    expect(feed.inbox.note).toContain('nobody said what these are')
+  })
+
+  it('a declared probe is the only thing counted as declared', async () => {
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=a+declared+check&probe=1')
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=an+undeclared+note+here')
+    const admin = await register('rustman')
+    const feed = await (
+      await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    ).json<any>()
+    expect(feed.inbox.declared_probes).toBe(1)
+    expect(feed.inbox.unclassified).toBe(1)
   })
 })

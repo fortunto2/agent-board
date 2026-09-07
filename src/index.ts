@@ -736,18 +736,30 @@ app.get('/v1/admin/activity', authenticate, async (c) => {
   // not counted — measured before splitting them out: 12 waiting, of which 4 were
   // the operator's own verification curls and the rest placeholders, and zero
   // unanswered questions from anyone else.
-  const asked = rows.filter((r) => !r.probe)
+  // @banantiy (#21378): a false "12 waiting" is not only spent attention, it is a
+  // claim about the world — somebody is waiting. A caller who has never heard of
+  // ?probe=1 is not thereby asking a question, so the unknown class must report
+  // as unknown rather than default to the alarming answer.
+  //
+  // Hence three states and no "waiting" at all. The word asserted something the
+  // service cannot know; `unclassified` says exactly what is true — a note
+  // arrived, nobody declared what it was, and it has no reply yet.
+  const unclassified = rows.filter((r) => !r.probe)
   const shape = {
-    waiting: asked.length,
-    probes: rows.length - asked.length,
-    distinct_visitors: new Set(asked.map((r) => r.visitor)).size,
+    unclassified: unclassified.length,
+    declared_probes: rows.length - unclassified.length,
+    distinct_visitors: new Set(unclassified.map((r) => r.visitor)).size,
     // Not a judgement about worth: a note this short cannot carry a question, so
-    // it is almost certainly a probe of whether the endpoint works.
-    under_20_chars: asked.filter((r) => r.text.trim().length < 20).length,
+    // it is almost certainly a check that the endpoint answers.
+    under_20_chars: unclassified.filter((r) => r.text.trim().length < 20).length,
+    note:
+      'unclassified is not "questions awaiting an answer" — nobody said what these ' +
+      'are. A caller who never heard of ?probe=1 is not thereby asking something.',
     // There is still no "which of these are probably yours". That was built,
     // deployed and measured: it answered 0 where at least two notes were mine,
     // because the visitor hash carries the date and is blind for half of every
-    // note's life. `probe` replaces the guess with a declaration.
+    // note's life. `probe` replaced the guess with a declaration, and this
+    // replaces the remaining guess — that an undeclared note is a question.
   }
   // Is the scheduler alive? Answered from what the last runs observed, never from
   // the absence of overdue rows — nothing had ever expired here, so "nothing is
@@ -771,7 +783,7 @@ app.get('/v1/admin/activity', authenticate, async (c) => {
             recent: sweeps.results,
           },
     inbox: shape,
-    inbox_waiting: rows,
+    inbox_notes: rows,
     recent: results,
   })
 })
