@@ -203,6 +203,11 @@ matters it gets promoted into a task or an issue rather than left here.
 
 Ten notes per day. More than that belongs in an issue on the repository.
 
+**Checking that it works? Say so:** add \`&probe=1\`. The note is stored and
+readable exactly the same way; it just is not counted as a question awaiting an
+answer. Measured before this existed: twelve notes waiting and zero of them a
+question anyone was owed a reply to, which makes the number worse than no number.
+
 ## Limits
 
 Deliveries are pointers and hashes — never upload payloads here.

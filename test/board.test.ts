@@ -890,8 +890,16 @@ describe('two claims with no ordering between them', () => {
     const codes = [r1.status, r2.status].sort()
     expect(codes).toEqual([200, 409])
 
+    // Two legitimate refusals, and which one you get is a timing detail: the
+    // loser either loses the race on the partial unique index (ALREADY_CLAIMED)
+    // or arrives after the winner's UPDATE and finds no open task at all
+    // (NOT_CLAIMABLE). Asserting one of them made this test flaky by
+    // construction — it pinned the MECHANISM instead of the guarantee, and it
+    // failed the first time the machine was busy enough to reorder them.
     const loser = r1.status === 409 ? r1 : r2
-    expect((await loser.json<any>()).error.code).toBe('ALREADY_CLAIMED')
+    expect(['ALREADY_CLAIMED', 'NOT_CLAIMABLE']).toContain(
+      (await loser.json<any>()).error.code,
+    )
 
     // The invariant the status codes are only evidence for.
     const active = await env.DB
@@ -1141,5 +1149,64 @@ describe('the example in the docs cannot drift from the refusal', () => {
     )
     expect(r.status).toBe(200)
     expect((await r.json<any>()).wrote).toBe(true)
+  })
+})
+
+// --- a probe declares itself, and is not attention owed ---------------------
+// Measured on the live queue: 12 waiting, 4 of them the operator's own
+// verification curls and the rest placeholders and connectivity checks — zero
+// unanswered questions from anyone else. The count was 100% wrong about the one
+// thing it reports. Guessing the author was tried and removed; the caller says so.
+
+describe('a declared probe is stored but not counted', () => {
+  it('probe=1 is kept and readable, and does not raise waiting', async () => {
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=checking+the+endpoint&probe=1')
+    const admin = await register('rustman')
+    const feed = await (
+      await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    ).json<any>()
+    expect(feed.inbox.waiting).toBe(0)
+    expect(feed.inbox.probes).toBe(1)
+    // Stored, not discarded: hiding it would lose the connectivity evidence.
+    expect(feed.inbox_waiting).toHaveLength(1)
+  })
+
+  it('a question without the flag still counts', async () => {
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=a+real+question+from+an+agent')
+    const admin = await register('rustman')
+    const feed = await (
+      await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    ).json<any>()
+    expect(feed.inbox.waiting).toBe(1)
+    expect(feed.inbox.probes).toBe(0)
+  })
+
+  it('probes do not inflate the distinct-visitor count either', async () => {
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=probe+one&probe=1', {
+      headers: { ...H, 'user-agent': 'prober-a/1' },
+    })
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=probe+two&probe=1', {
+      headers: { ...H, 'user-agent': 'prober-b/1' },
+    })
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=a+question+worth+answering', {
+      headers: { ...H, 'user-agent': 'asker/1' },
+    })
+    const admin = await register('rustman')
+    const feed = await (
+      await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    ).json<any>()
+    expect(feed.inbox.waiting).toBe(1)
+    expect(feed.inbox.probes).toBe(2)
+    expect(feed.inbox.distinct_visitors).toBe(1)
+  })
+
+  it('only an explicit value turns it on', async () => {
+    await SELF.fetch('https://board.rustman.org/v1/inbox?text=not+flagged+at+all&probe=0')
+    const admin = await register('rustman')
+    const feed = await (
+      await SELF.fetch('https://board.rustman.org/v1/admin/activity', { headers: auth(admin) })
+    ).json<any>()
+    expect(feed.inbox.waiting).toBe(1)
+    expect(feed.inbox.probes).toBe(0)
   })
 })

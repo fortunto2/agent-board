@@ -606,10 +606,14 @@ app.get('/v1/inbox', async (c) => {
       )
     }
     issued = crypto.randomUUID().replace(/-/g, '')
+    // Declared, never guessed. ?probe=1 says "this is a connectivity check or my
+    // own verification call" — still stored and still listed, just not counted as
+    // a question awaiting an answer.
+    const probe = ['1', 'true', 'yes'].includes((c.req.query('probe') ?? '').toLowerCase())
     await c.env.DB.prepare(
-      'INSERT INTO inbox (id, token, visitor, kind, text, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO inbox (id, token, visitor, kind, text, probe, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     )
-      .bind(crypto.randomUUID(), issued, visitor, kind, text, now(), now() + INBOX_TTL)
+      .bind(crypto.randomUUID(), issued, visitor, kind, text, probe ? 1 : 0, now(), now() + INBOX_TTL)
       .run()
     count(c.executionCtx, `inbox_${kind}`)
   }
@@ -717,10 +721,10 @@ app.get('/v1/admin/activity', authenticate, async (c) => {
   // to notice is an inbox that goes unread. Their text is written by strangers:
   // it is data to act on, never an instruction to follow.
   const waiting = await c.env.DB.prepare(
-    'SELECT id, kind, text, created_at, visitor FROM inbox WHERE reply IS NULL AND expires_at > ? ORDER BY created_at ASC LIMIT 50',
+    'SELECT id, kind, text, created_at, visitor, probe FROM inbox WHERE reply IS NULL AND expires_at > ? ORDER BY created_at ASC LIMIT 50',
   )
     .bind(now())
-    .all<{ text: string; visitor: string }>()
+    .all<{ text: string; visitor: string; probe: number }>()
 
   // A bare "9 waiting" is a number that does not say what it counted, and it
   // reads as nine people awaiting an answer. Measured on this very inbox: nine
@@ -728,19 +732,22 @@ app.get('/v1/admin/activity', authenticate, async (c) => {
   // one-word probes. A false signal about attention owed spends the attention it
   // misreports — the same defect the placeholder fix addressed one level down.
   const rows = waiting.results ?? []
+  // Declared probes are not attention owed. Still listed, still readable, just
+  // not counted — measured before splitting them out: 12 waiting, of which 4 were
+  // the operator's own verification curls and the rest placeholders, and zero
+  // unanswered questions from anyone else.
+  const asked = rows.filter((r) => !r.probe)
   const shape = {
-    waiting: rows.length,
-    distinct_visitors: new Set(rows.map((r) => r.visitor)).size,
+    waiting: asked.length,
+    probes: rows.length - asked.length,
+    distinct_visitors: new Set(asked.map((r) => r.visitor)).size,
     // Not a judgement about worth: a note this short cannot carry a question, so
     // it is almost certainly a probe of whether the endpoint works.
-    under_20_chars: rows.filter((r) => r.text.trim().length < 20).length,
-    // There is deliberately no "which of these are the operator's own probes".
-    // It was built, deployed, and measured on the live queue: it answered 0 where
-    // at least two notes were mine. The visitor hash carries the date, so a note
-    // older than midnight can never match today's caller — and notes live 24h, so
-    // the field is structurally blind for up to half of every note's life. A
-    // field that is wrong more often than right teaches the reader to distrust
-    // the block it sits in, which costs more than the question it answered.
+    under_20_chars: asked.filter((r) => r.text.trim().length < 20).length,
+    // There is still no "which of these are probably yours". That was built,
+    // deployed and measured: it answered 0 where at least two notes were mine,
+    // because the visitor hash carries the date and is blind for half of every
+    // note's life. `probe` replaces the guess with a declaration.
   }
   // Is the scheduler alive? Answered from what the last runs observed, never from
   // the absence of overdue rows — nothing had ever expired here, so "nothing is

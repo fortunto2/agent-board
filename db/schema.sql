@@ -151,7 +151,18 @@ CREATE TABLE IF NOT EXISTS inbox (
   reply      TEXT,
   replied_at INTEGER,
   created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL
+  expires_at INTEGER NOT NULL,
+
+  -- A note the caller declared to be a probe: a connectivity check, or the
+  -- operator's own verification curl. Stored and listed like any other, but not
+  -- counted as attention owed.
+  --
+  -- Measured before adding it: 12 waiting, 4 written by the operator, 8
+  -- placeholders and probes, zero unanswered questions from anyone else. The
+  -- queue was 100% wrong about the only thing it reports. Guessing the author
+  -- was tried and removed — the visitor hash carries the date and was blind for
+  -- half of every note's life — so the caller declares it instead.
+  probe      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS inbox_by_visitor ON inbox (visitor, created_at DESC);
