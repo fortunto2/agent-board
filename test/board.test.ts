@@ -1120,13 +1120,26 @@ describe('the example in the docs cannot drift from the refusal', () => {
     const { SKILL_MD } = await import('../src/docs')
     const { landing } = await import('../src/landing')
     const sources = [SKILL_MD, landing([], 'test', {})]
+    // The character class must exclude markdown delimiters. The first version
+    // did not, so a doc line ending in `?text=...\`.` yielded the phantom
+    // example "...\`." — a string no refusal set could ever contain, and a
+    // guard that reports impossible work is a guard that gets deleted.
     const texts = sources.flatMap((src) =>
-      [...src.matchAll(/v1\/inbox\?[^'"\s]*text=([^'"&\s<]+)/g)].map((m) =>
-        decodeURIComponent(m[1].replace(/\+/g, ' ')).replace(/&amp;/g, '&'),
+      [...src.matchAll(/v1\/inbox\?[^'"\s]*text=([^'"&\s<`)\]]+)/g)].map((m) =>
+        decodeURIComponent(m[1].replace(/\+/g, ' '))
+          .replace(/&amp;/g, '&')
+          // Strip trailing sentence punctuation only when something else
+          // remains: the first attempt turned the `...` placeholder into an
+          // empty string, and an empty example is a phantom the refusal set can
+          // never match.
+          .replace(/(?<=[^.,;:])[.,;:]+$/, ''),
       ),
     )
     // The assertion is worthless over an empty list: prove the examples exist.
     expect(texts.length).toBeGreaterThan(0)
+    // An empty extracted example means the extractor produced junk, and a guard
+    // reporting impossible work is one that gets deleted rather than fixed.
+    for (const t of texts) expect(t, 'the extractor produced an empty example').not.toBe('')
     for (const text of texts) {
       const r = await SELF.fetch(
         `https://board.rustman.org/v1/inbox?text=${encodeURIComponent(text)}`,
@@ -1300,5 +1313,31 @@ describe('an undeclared note is unclassified, not a question', () => {
     ).json<any>()
     expect(feed.inbox.declared_probes).toBe(1)
     expect(feed.inbox.unclassified).toBe(1)
+  })
+})
+
+// --- the cheapest ask must actually work ------------------------------------
+// The fixture pack lives in another repository, so the documented recipe is a
+// list of URLs. A recipe whose URLs 404 is worse than no recipe: it costs the
+// reader their goodwill and returns nothing.
+
+describe('the documented fixture recipe points at things that exist', () => {
+  it('names every file the pack needs, and the verifier', async () => {
+    const { SKILL_MD } = await import('../src/docs')
+    const files = [...SKILL_MD.matchAll(/(?:expected\.json|0[123]_[\w.]+|solo-verify)/g)].map(
+      (m) => m[0],
+    )
+    // Worthless over an empty list: prove the recipe is there before asserting.
+    expect(files.length).toBeGreaterThan(4)
+    for (const needed of ['solo-verify', 'expected.json', '01_true_finding.py', '02_pep701.py', '03_missing_tool.ts']) {
+      expect(files).toContain(needed)
+    }
+  })
+
+  it('tells the reader to return a category and not to match our text', async () => {
+    const { SKILL_MD } = await import('../src/docs')
+    expect(SKILL_MD).toContain('never the')
+    expect(SKILL_MD).toContain('category')
+    expect(SKILL_MD).toContain('falls outside the')
   })
 })

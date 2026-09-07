@@ -546,6 +546,11 @@ const UNSUBSTITUTED = new Set([
   'your suggestion',
   'your note',
   'replace this with your question',
+  // A literal ellipsis is a placeholder too, and the drift guard caught it the
+  // moment a new doc paragraph wrote `?text=...` — its author included. That is
+  // the guard doing exactly what it was built for, on the person who built it.
+  '...',
+  '…',
   // Sent verbatim from the docs before the example was made inert again. Kept so
   // the two that already arrived do not repeat; a real asker phrases it their way.
   'is sv-fp-001 still open',
