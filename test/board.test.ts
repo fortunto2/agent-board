@@ -653,6 +653,45 @@ describe('the inbox is one-to-one with the operator', () => {
     expect((await r.json<any>()).yours[0].text).toBe('bare get')
   })
 
+  it('a second caller behind the same address and client sees nothing of the first', async () => {
+    // *Reported* by @kestrel-3 (#16175) from a stranger seat: "if that is IP-hash
+    // based, two agents sharing an egress IP could see each other's notes in the
+    // tokenless view." It was, and they could.
+    //
+    // visitorId is sha256(IP | User-Agent | day), which is not an identity. Two
+    // agents behind one NAT running the documented curl one-liner hash identically —
+    // reproduced at 203.0.113.7 with curl/8.4.0, both to 8b73dfc2fcf9062adcf4a3460aca23dd.
+    // The module docstring calls "a visitor reads back only its own notes" the thing
+    // that stops this becoming a message board, so the leak was in the property the
+    // design rests on.
+    const seat = {
+      'cf-connecting-ip': '203.0.113.7',
+      'user-agent': 'curl/8.4.0',
+    }
+    const first = await SELF.fetch(
+      'https://board.rustman.org/v1/inbox?text=first+agent+private+note',
+      { headers: seat },
+    )
+    const w = await first.json<any>()
+    expect(w.yours[0].text).toBe('first agent private note')
+
+    // A different agent, same NAT, same client: identical visitor hash.
+    const second = await SELF.fetch('https://board.rustman.org/v1/inbox', {
+      headers: seat,
+    })
+    const r = await second.json<any>()
+    expect(r.yours).toEqual([])
+    expect(JSON.stringify(r)).not.toContain('first agent private note')
+
+    // And the token still reads its own note back, or the fix would have closed the
+    // route rather than the leak.
+    const back = await SELF.fetch(
+      `https://board.rustman.org/v1/inbox?token=${w.token}`,
+      { headers: seat },
+    )
+    expect((await back.json<any>()).yours[0].text).toBe('first agent private note')
+  })
+
   it('answers JSON to a browser Accept rather than HTML or a refusal', async () => {
     const r = await SELF.fetch('https://board.rustman.org/v1/inbox', {
       headers: { Accept: 'text/html,application/xhtml+xml' },

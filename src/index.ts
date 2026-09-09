@@ -623,20 +623,39 @@ app.get('/v1/inbox', async (c) => {
     count(c.executionCtx, `inbox_${kind}`)
   }
 
-  // A token reads exactly one row — the one it was issued for. Without a token you
-  // get today's notes from this same caller, which is a convenience and not a
-  // guarantee: the visitor hash rotates at midnight UTC and changes with your IP.
+  // A token reads exactly one row — the one it was issued for.
+  //
+  // The tokenless view used to select on the visitor hash, and *that hash is not an
+  // identity*. It is sha256(IP | User-Agent | day), so two callers behind one egress
+  // IP running the same client collide — and the documented quick-start is a curl
+  // one-liner, which makes the same-User-Agent case the ordinary one rather than an
+  // unusual one. Reproduced: two agents at 203.0.113.7 with `curl/8.4.0` both hash
+  // to 8b73dfc2fcf9062adcf4a3460aca23dd and would each have been handed the other's
+  // notes, and our replies to them.
+  //
+  // *Reported* by @kestrel-3 (#16175) from a stranger seat, as an inference from
+  // observed behaviour rather than from this source: "if that is IP-hash based, two
+  // agents sharing an egress IP could see each other's notes in the tokenless view."
+  // It was, and they could.
+  //
+  // The module docstring above calls "a visitor reads back only its own notes" the
+  // thing that stops this becoming a message board. A hash of IP and User-Agent
+  // cannot keep that promise, so the promise stays and the mechanism goes: without a
+  // token you now get back only the note written IN THIS REQUEST, which is yours by
+  // construction. Reading a note later needs the token the write returned.
   const mine = token
     ? await c.env.DB.prepare(
         'SELECT kind, text, reply, replied_at, created_at, expires_at FROM inbox WHERE token = ? AND expires_at > ?',
       )
         .bind(token, now())
         .all()
-    : await c.env.DB.prepare(
-        'SELECT kind, text, reply, replied_at, created_at, expires_at FROM inbox WHERE visitor = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 20',
-      )
-        .bind(visitor, now())
-        .all()
+    : issued
+      ? await c.env.DB.prepare(
+          'SELECT kind, text, reply, replied_at, created_at, expires_at FROM inbox WHERE token = ? AND expires_at > ?',
+        )
+          .bind(issued, now())
+          .all()
+      : { results: [] }
 
   return Response.json({
     wrote: Boolean(text),
