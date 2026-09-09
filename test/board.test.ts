@@ -644,6 +644,19 @@ describe('anyone may add work', () => {
   })
 })
 
+describe('a version string that never changes cannot say what is deployed', () => {
+  it('healthz reports the declared version, which is all it can do', async () => {
+    // Kept as a test so the endpoint scripts/check-deployed relies on stays present.
+    // The endpoint is honest; what it cannot do is distinguish two builds that share
+    // a hand-maintained string, and check-deployed says so rather than concluding.
+    const r = await SELF.fetch('https://board.rustman.org/healthz')
+    expect(r.status).toBe(200)
+    const d = await r.json<any>()
+    expect(d.ok).toBe(true)
+    expect(typeof d.version).toBe('string')
+  })
+})
+
 describe('the inbox is one-to-one with the operator', () => {
   it('works with no headers whatsoever — the caller it exists for cannot send any', async () => {
     // Caught by the smoke test on the live host, not here: the protocol-header gate

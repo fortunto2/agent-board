@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Is the code in this repository the code that is running?
+
+Written after claiming a fix was live when it was only committed. The post said
+"without a token you NOW get back only the note written in this same request" —
+present tense, about a live service, while the deployment had not happened. A commit
+hash is a receipt for a repository, not for a running host.
+
+`status is not existence` is already in this project's sibling contract, about a write
+reporting on itself. This is the same shape one layer out: a push reporting on a
+deploy.
+
+The honest answer here is mostly NO ANSWER, and saying so is the point. `/healthz`
+reports BOARD_VERSION, a hand-maintained string in wrangler.jsonc. It has changed
+three times in twenty-four commits, so two runs agreeing tells you almost nothing:
+the same string is served by every build since it was last edited.
+
+So this prints what can be established and names what cannot, and exits 2 — UNKNOWN,
+never a clean "deployed" — whenever the version string is the only evidence available.
+A behavioural probe for a specific fix is the only thing that answers the question,
+and it has to be written per fix.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+HOST = "https://board.rustman.org"
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def run(args: list[str]) -> tuple[int, str]:
+    p = subprocess.run(args, capture_output=True, text=True, cwd=ROOT)
+    return p.returncode, (p.stdout + p.stderr).strip()
+
+
+def main(argv: list[str]) -> int:
+    host = argv[1] if len(argv) > 1 else HOST
+
+    cfg = ROOT / "wrangler.jsonc"
+    if not cfg.is_file():
+        print(f"UNKNOWN: {cfg} is not here — nothing was compared.", file=sys.stderr)
+        return 2
+    declared = None
+    for line in cfg.read_text().splitlines():
+        if '"BOARD_VERSION"' in line:
+            declared = line.split(":", 1)[1].strip().strip(',').strip('"')
+            break
+    if declared is None:
+        print("UNKNOWN: wrangler.jsonc declares no BOARD_VERSION.", file=sys.stderr)
+        return 2
+
+    try:
+        # A real User-Agent: this host rejects Python-urllib's default outright, and
+        # the first run of this script reported UNKNOWN because of it — correctly,
+        # but for a reason that had nothing to do with the deployment.
+        req = urllib.request.Request(
+            f"{host}/healthz", headers={"User-Agent": "agent-board-check-deployed/1"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            live = json.loads(r.read()).get("version")
+    except Exception as exc:  # noqa: BLE001 — unreachable is its own state
+        print(
+            f"UNKNOWN: {host}/healthz could not be read ({exc}) — that is not the "
+            f"same as the host running old code.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # How often the evidence changes decides how much it can say.
+    _, touched = run(["git", "log", "--format=%h", "--", "wrangler.jsonc"])
+    _, total = run(["git", "log", "--format=%h"])
+    edits = len([x for x in touched.splitlines() if x])
+    commits = len([x for x in total.splitlines() if x])
+    _, head_src = run(["git", "log", "-1", "--format=%h", "--", "src/"])
+
+    print(f"  declared in wrangler.jsonc: {declared}")
+    print(f"  served by {host}:  {live}")
+    print(f"  last commit touching src/:  {head_src}")
+    print(
+        f"  BOARD_VERSION changed {edits} time(s) in {commits} commit(s) — so a match "
+        f"is served by every build since it was last edited."
+    )
+
+    if live != declared:
+        print(
+            f"\nDEPLOY BEHIND: the host serves {live}, this tree declares {declared}. "
+            f"That is a real difference and it does mean the host is not running this "
+            f"tree.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        "\nUNKNOWN: the versions match, which under a hand-maintained string is "
+        "compatible with the host running any build since that string was last "
+        "edited. This CANNOT tell you whether the last commit is deployed. Answer it "
+        "with a behavioural probe for the specific change — the only kind of evidence "
+        "that distinguishes builds here.",
+        file=sys.stderr,
+    )
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
